@@ -1069,12 +1069,13 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 static QStringList
 explode(const QString& str)
 {
-    QRegExp rx( QString::fromUtf8("(\\ |\\-|\\.|\\/|\\t|\\n)") ); //RegEx for ' ' '/' '.' '-' '\t' '\n'
+    QRegularExpression rx( QString::fromUtf8("(\\ |\\-|\\.|\\/|\\t|\\n)") ); //RegEx for ' ' '/' '.' '-' '\t' '\n'
     QStringList ret;
     int startIndex = 0;
 
     while (true) {
-        int index = str.indexOf(rx, startIndex);
+        QRegularExpressionMatch match(rx.match(str, startIndex));
+        int index = match.capturedStart();
 
         if (index == -1) {
             ret.push_back( str.mid(startIndex) );
