@@ -301,7 +301,11 @@ private:
         if ( index.isValid() && (index.column() != 0) && selection.contains(item) ) {
             Q_EMIT itemClicked( item, index.column() );
         } else if ( triggerButtonIsRight(e) && index.isValid() ) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+            _panel->showItemMenu( item, e->globalPosition().toPoint() );
+#else
             _panel->showItemMenu( item, e->globalPos() );
+#endif
         } else {
             QTreeWidget::mouseReleaseEvent(e);
         }
@@ -1959,7 +1963,11 @@ TreeWidget::dragMoveEvent(QDragMoveEvent* e)
 {
     const QMimeData* mime = e->mimeData();
     std::list<DroppedTreeItemPtr> droppedItems;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    bool ret = dragAndDropHandler(mime, e->position().toPoint(), droppedItems);
+#else
     bool ret = dragAndDropHandler(mime, e->pos(), droppedItems);
+#endif
     QTreeWidget::dragMoveEvent(e);
 
     if (!ret) {
@@ -2142,7 +2150,11 @@ TreeWidget::dropEvent(QDropEvent* e)
 {
     std::list<DroppedTreeItemPtr> droppedItems;
     const QMimeData* mime = e->mimeData();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    bool accepted = dragAndDropHandler(mime, e->position().toPoint(), droppedItems);
+#else
     bool accepted = dragAndDropHandler(mime, e->pos(), droppedItems);
+#endif
 
     e->setAccepted(accepted);
 

@@ -98,7 +98,11 @@ private:
     virtual void dropEvent(QDropEvent* e) OVERRIDE FINAL;
     virtual void resizeEvent(QResizeEvent *event) OVERRIDE FINAL;
     virtual void dragMoveEvent(QDragMoveEvent* e) OVERRIDE FINAL;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    virtual void enterEvent(QEnterEvent* e) OVERRIDE FINAL;
+#else
     virtual void enterEvent(QEvent* e) OVERRIDE FINAL;
+#endif
     virtual void leaveEvent(QEvent* e) OVERRIDE FINAL;
 
 private:

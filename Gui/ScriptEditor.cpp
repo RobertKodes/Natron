@@ -621,7 +621,11 @@ ScriptEditor::printAutoDeclaredVariable(const QString& str)
 }
 
 void
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+ScriptEditor::enterEvent(QEnterEvent *e)
+#else
 ScriptEditor::enterEvent(QEvent *e)
+#endif
 {
     enterEventBase();
     QWidget::enterEvent(e);

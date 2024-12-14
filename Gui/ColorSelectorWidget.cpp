@@ -1106,8 +1106,12 @@ void ColorSelectorWidget::handleHexChanged()
         value.prepend( QString::fromUtf8("#") );
     }
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QColor color( QColor::fromString(_hex->text()) );
+#else
     QColor color;
     color.setNamedColor( _hex->text() );
+#endif
     if ( !color.isValid() ) {
         return;
     }

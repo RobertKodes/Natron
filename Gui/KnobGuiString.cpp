@@ -147,7 +147,11 @@ AnimatingTextEdit::setDirty(bool b)
 }
 
 void
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+AnimatingTextEdit::enterEvent(QEnterEvent* e)
+#else
 AnimatingTextEdit::enterEvent(QEvent* e)
+#endif
 {
     _dnd->mouseEnter(e);
     QTextEdit::enterEvent(e);
@@ -270,7 +274,11 @@ KnobLineEdit::~KnobLineEdit()
 }
 
 void
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+KnobLineEdit::enterEvent(QEnterEvent* e)
+#else
 KnobLineEdit::enterEvent(QEvent* e)
+#endif
 {
     _dnd->mouseEnter(e);
     LineEdit::enterEvent(e);
