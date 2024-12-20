@@ -52,7 +52,9 @@ if(NOT DEFINED CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "")
     message(STATUS "Setting build type to '${CMAKE_BUILD_TYPE}' as none was specified.")
 endif()
 
-find_package(Boost COMPONENTS headers serialization)
+find_package(boost_headers REQUIRED)
+find_package(boost_serialization REQUIRED)
+
 if(WIN32)
     # Prevent looking in the registry so that the MinGW python can be found.
     set(Python3_FIND_REGISTRY NEVER)
