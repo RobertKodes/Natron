@@ -304,6 +304,31 @@ make install
 ```
 
 
+## macOS packaging tools
+
+In addition to the compile-time dependencies above, building the distributable
+`.dmg` with `tools/jenkins/launchBuildMain.sh` requires a few extra tools. They
+are verified early by the build script (the `PKGOS = OSX` check in
+`launchBuildMain.sh`), so a missing tool fails fast with a clear message instead
+of after a multi-hour build:
+
+- **dmgbuild** — writes the DMG window background and icon layout directly into
+  the disk image's `.DS_Store`, without driving Finder (the old AppleScript
+  approach needs GUI Automation / TCC permission and fails in headless or
+  unprivileged sessions). Install with pip:
+
+  ```Shell
+  python3 -m pip install dmgbuild
+  ```
+
+- **oiiotool** — provided by the `openimageio` port (already installed as a
+  Natron dependency); used to contrast-reduce the DMG background image.
+- **identify** — provided by the `ImageMagick` port (already installed as a
+  Natron dependency); used to read the background image dimensions.
+
+If you add a new macOS build/packaging dependency, add it to the early check in
+`launchBuildMain.sh` and document it here.
+
 ## Checkout sources
 
 ```Shell
