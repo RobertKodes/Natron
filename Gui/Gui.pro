@@ -75,6 +75,7 @@ SOURCES += \
     AboutWindow.cpp \
     ActionShortcuts.cpp \
     AddKnobDialog.cpp \
+    AIMcpServer.cpp \
     AnimatedCheckBox.cpp \
     AutoHideToolBar.cpp \
     BackdropGui.cpp \
@@ -227,6 +228,7 @@ HEADERS += \
     AboutWindow.h \
     ActionShortcuts.h \
     AddKnobDialog.h \
+    AIMcpServer.h \
     AnimatedCheckBox.h \
     AutoHideToolBar.h \
     BackdropGui.h \
