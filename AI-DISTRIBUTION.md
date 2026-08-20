@@ -21,7 +21,7 @@ Run from the MSYS2 MINGW64 shell:
 ./tools/package-natron-ai.sh
 ```
 
-Output: `dist/NatronAI/` (~408 MB) and `dist/NatronAI-win64.zip` (~136 MB).
+Output: `dist/NatronAI/` (~406 MB) and `dist/NatronAI-win64.zip` (~143 MB).
 
 The recipient unzips it anywhere and runs `Natron-AI.bat`. Nothing is installed;
 it coexists with an official Natron install without touching it.
@@ -32,55 +32,76 @@ directories.
 
 ### What works
 
-142 plug-ins load. All of **openfx-misc** — Grade, Merge, Transform, ChromaKeyer,
-Keyer, PIK, Reformat, ColorCorrect, Crop, Shuffle, Premult, ImageStatistics, and
-~130 more — plus Natron's built-ins: Roto, RotoPaint, Tracker, Group, Precomp,
-Backdrop, Dot.
+**162 plug-ins load, and an end-to-end render succeeds.** Verified by building
+ColorBars -> Grade -> Write inside the packaged build and rendering one frame:
+a 169 KB PNG came out. That exercises plug-in loading, node creation,
+connection, parameter writes, rendering and file output.
 
-### What does not: file input and output
+- **openfx-misc**: Grade, Merge, Transform, ChromaKeyer, Keyer, PIK, Reformat,
+  ColorCorrect, Crop, Shuffle, Premult, ImageStatistics and ~130 more.
+- **openfx-io**: ReadOIIO / WriteOIIO (EXR, PNG, JPEG, TIFF, DPX, TGA, HDR...),
+  ReadPNG / WritePNG, and the OCIO nodes.
+- **Natron built-ins**: Roto, RotoPaint, Tracker, Group, Precomp, Backdrop, Dot.
 
-`openfx-io` does not load, so there are no concrete readers or writers. Natron's
-`Read` and `Write` nodes are meta-nodes that delegate to an OFX reader/writer, so
-without them images cannot be loaded or saved. **The package is a complete
-processing environment but cannot open or write image files.**
+Not included: GMIC and Arena (`openfx-gmic`, `openfx-arena`), the CImg nodes, and
+**video read/write** — see below.
 
-The cause is a compiler ABI skew, not a packaging fault. Evidence:
+### Getting there: the GCC 15 / GCC 16 TLS conflict
 
-- `IO.ofx` fails with `WinError 127` ("the specified procedure could not be
-  found") — a missing *symbol*, not a missing DLL. Every DLL it imports is
-  present and unique.
-- It fails identically when loaded from `/mingw64/bin` directly, outside the
-  package. Packaging is not involved.
-- The local toolchain is **GCC 16.2.0**; `libOpenImageIO-2.5.dll` from the MSYS2
-  repo reports `GCC: (Rev5, Built by MSYS2 project) 15.1.0`.
-- `Misc.ofx`, which loads fine, imports **zero** C++ libraries. Every plug-in that
-  links a C++ library built by the older GCC is the one that fails.
+`openfx-io` initially would not load at all, failing with `WinError 127`. Worth
+recording, because anyone rebuilding this will hit it.
 
-Two related version skews found in the same area, both pre-existing in Natron's
-own Windows package repo (pinned `20250524`) versus current MSYS2:
+Diagnosis required comparing each binary's import table against the export tables
+of the DLLs on disk, walking the whole dependency closure. `ldd` is useless here:
+it refuses a `.ofx` (a DLL with a non-standard extension), and it only reports
+missing *files*, whereas `WinError 127` is a missing *symbol*.
 
-- `avcodec-58` requires `libbluray-2.dll` and `libx265-215.dll`; MSYS2 now ships
-  `libbluray-3.dll` and `libx265-217.dll`. Major soname bumps, so renaming them
-  would risk crashes during decode rather than fix anything. The `IO` bundle was
-  therefore rebuilt without FFmpeg (video I/O is out regardless).
-- `openfx-io/OIIO/Makefile` omits `ofxsFileOpen.o`, so that sub-target does not
-  link at all. Patched locally; unrelated to the ABI problem, but it hides it.
+- `IO.ofx` and all of its direct imports resolved cleanly. The failure was three
+  levels down.
+- `libOpenImageIO-2.5.dll`, from Natron's pinned pacman repo and built with GCC
+  15, imported `__emutls_v._ZSt11__once_call` and `__emutls_v._ZSt15__once_callable`
+  — the *emulated-TLS* variables for `std::call_once`.
+- GCC 16 moved MinGW to native TLS. Its libstdc++ exports
+  `_ZSt15__get_once_callv` / `_ZSt19__get_once_callablev` **instead** and drops
+  the emutls pair.
+- Chain: `libOpenImageIO-2.5.dll` -> `libheif.dll` -> `libopenjph-0.31.dll`. The
+  latter two come from current MSYS2 and are GCC 16 builds, so they need the
+  native-TLS symbols.
 
-### Fixing file I/O
+So the two halves of the graph demanded mutually exclusive libstdc++ versions.
+Downgrading to GCC 15 fixed OpenImageIO and broke libheif/libopenjph; every
+`libheif` in the MSYS2 archive back to 1.22.0 is already a GCC 16 build, so no
+version pair satisfied both.
 
-Pick one:
+**The fix was to rebuild OpenImageIO with GCC 16**, from Natron's own PKGBUILD:
 
-1. **Match the compiler.** Install the GCC 15.x toolchain in MSYS2 and rebuild
-   `openfx-io` (and Natron) with it, so the C++ ABI matches the prebuilt
-   OpenImageIO/OpenColorIO/SeExpr. Most likely to work, least invasive.
-2. **Rebuild the dependencies.** Build OpenImageIO, OpenColorIO and SeExpr from
-   source with GCC 16.2 so everything shares one ABI. Slow but self-consistent.
-3. **Use Natron's own SDK pipeline.** `tools/jenkins/build-plugins.sh` builds the
-   whole plug-in set inside their controlled SDK, which is where these version
-   pins are known-good. Heaviest, and closest to what ships officially.
+```bash
+cd tools/MINGW-packages/mingw-w64-openimageio
+makepkg-mingw -sCLf --noconfirm --nocheck
+pacman -U --overwrite '*' mingw-w64-x86_64-natron_openimageio-*.pkg.tar.zst
+```
 
-Until one of those is done, the package is suitable for demonstrating the AI
-panel and for graph work, not for production compositing.
+One patch is needed first. OIIO 2.5.13's `src/cmake/compiler.cmake:191` writes
+`if (${CMAKE_SYSTEM_NAME} STREQUAL ...)`; with CMake 4 and an empty
+`CMAKE_SYSTEM_PROCESSOR` that expands to a malformed `if` and configuration
+aborts. Drop the `${}` so the variables are passed by name.
+
+After that, rebuild `openfx-io` and everything resolves.
+
+### Still missing: video I/O
+
+`avcodec-58` from `natron_ffmpeg-gpl2` requires `libbluray-2.dll` and
+`libx265-215.dll`; current MSYS2 ships `libbluray-3.dll` and `libx265-217.dll`.
+Those are major soname bumps, so renaming them would risk crashes during decode
+rather than fix anything. The `IO` bundle is therefore built with the FFmpeg
+objects removed (`ReadFFmpeg.o FFmpegFile.o WriteFFmpeg.o PixelFormat.o` dropped
+from `IO/Makefile`). Stills work fully; video does not.
+
+The same treatment as OpenImageIO would fix it: rebuild `natron_ffmpeg-gpl2` from
+its PKGBUILD against current MSYS2 codecs.
+
+Unrelated but found alongside: `openfx-io/OIIO/Makefile` omits `ofxsFileOpen.o`,
+so that sub-target never links. Patched locally.
 
 ## The alternative worth considering
 
