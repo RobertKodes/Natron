@@ -60,7 +60,9 @@ translation unit, with the standard comment banner:
 **3. `QT_NO_CAST_FROM_ASCII` is set.** A bare string literal will not compile into
 a `QString`. Always `QString::fromUtf8("…")`, or `tr("…")` for user-visible text.
 
-**4. PIMPL.** Public class `Foo` holds only a `boost::scoped_ptr<FooPrivate> _imp;`
+**4. PIMPL.** Public class `Foo` holds only an opaque pointer to `FooPrivate`.
+In `Gui/` the convention is `std::unique_ptr<FooPrivate> _imp;` (see
+`Gui/ScriptEditor.h:122`); older `Engine/` code uses `boost::scoped_ptr`.
 The implementation struct lives in `FooPrivate.h` or at the top of `Foo.cpp`.
 `FooPrivate` is a `struct` and is usually declared a `friend`.
 

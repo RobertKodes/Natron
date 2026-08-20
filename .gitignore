@@ -304,3 +304,4 @@ Gui/Qt5
 # Local agent session files (not part of Natron)
 .claude/
 GOAL.md
+build/
