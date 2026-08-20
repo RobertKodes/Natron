@@ -301,3 +301,7 @@ moc_predefs.h
 # shiboken-generated files
 Engine/Qt5
 Gui/Qt5
+# Local agent session files (not part of Natron)
+.claude/
+GOAL.md
+AI-RECON.md
