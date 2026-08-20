@@ -2,10 +2,34 @@
 
 ## Status on this machine
 
-The build (Prompt 7) **has not been run**: this machine has no C++ toolchain at
-all. Checked and absent: `cmake`, `ninja`, `gcc`/`g++`, `make`, `qmake`,
-`pkg-config`, MSYS2 (`C:\msys64`), Visual Studio. Nothing was worked around or
-commented out to hide this — the code is written but unverified by a compiler.
+**The build succeeds.** `[587/587] Linking CXX executable App\Natron.exe`, ninja
+exit code 0, zero errors. All three new translation units compiled on the first
+attempt and produced no warnings of their own (the build emits ~1618 warnings
+overall, none from `AI*`):
+
+| Object | Size |
+|---|---|
+| `AIMcpServer.cpp.obj` | 3.0 MB |
+| `AIChatPanel.cpp.obj` | 1.3 MB |
+| `AIAgentBackend.cpp.obj` | 1.0 MB |
+
+`nm -C App/Natron.exe` finds **133** `AIMcpServer`/`AIChatPanel`/`AIAgentBackend`
+symbols, so the panel really is linked into the application.
+
+### ctest fails, and it is not this branch's doing
+
+`ctest` reports `1 - Tests (SEGFAULT)`. That failure is environmental and
+pre-existing. The proof is symbol-level rather than an argument:
+`nm -C Tests/Tests.exe` finds **0** `AI*` symbols against 133 in `Natron.exe` —
+`Tests/CMakeLists.txt:36-42` links `NatronEngine`, `Qt::Core`, `Python3::Python`
+and `openMVG` but **not** `Gui`, and every change on this branch is under `Gui/`
+or is documentation. The test binary does not contain this branch's code.
+
+The actual cause is missing fixtures that CI supplies and a local checkout does
+not: the OFX plug-in bundles at `../Plugins` (`.github/workflows/ci.yml:87`) and
+`Resources/etc/fonts`. The test says so itself before dying: *You must specify
+the filename of a script or Natron project (.ntp)* and *Fontconfig configuration
+file ... does not exist*.
 
 ## What to install (Windows)
 
@@ -41,9 +65,11 @@ pacman -S --needed --overwrite "*" mingw-w64-x86_64-natron-build-deps-qt5
 4. Fetch the OpenColorIO configs (needed at runtime, and by the tests):
 
 ```bash
-wget https://github.com/NatronGitHub/OpenColorIO-Configs/archive/Natron-v20210801.tar.gz
-tar xzf Natron-v20210801.tar.gz
-mv OpenColorIO-Configs-Natron-v20210801 ../OpenColorIO-Configs
+# The tag is 2.5 (ci.yml sets OCIO_CONFIG_VERSION: 2.5). Natron-v20210801 returns 404.
+cd ..            # sibling of the Natron checkout
+wget https://github.com/NatronGitHub/OpenColorIO-Configs/archive/Natron-v2.5.tar.gz
+tar xzf Natron-v2.5.tar.gz
+mv OpenColorIO-Configs-Natron-v2.5 OpenColorIO-Configs
 ```
 
 5. Submodules, then build:
@@ -78,9 +104,11 @@ against the static type, so no existing caller is affected; the reason is that
 grouping agent mutations into one macro requires `beginMacro`/`endMacro` on that
 exact stack from outside the panel.
 
-## Things a compiler will check that I could not
+## API details that the build confirmed
 
-Verified by reading headers, but unproven:
+These were read out of the headers while writing the code and are now also
+compiler-verified. Worth keeping because several contradict the Python-facing
+API, which is what most Natron documentation describes:
 
 - `KnobChoice::getEntries_mt_safe()` returns `std::vector<ChoiceOption>` (not
   strings) — `Engine/KnobTypes.h:517`, `Engine/ChoiceOption.h:37-47`.
@@ -95,6 +123,11 @@ Verified by reading headers, but unproven:
 - `Q_SIGNALS` is `public` in Qt5, so `AIMcpServerPrivate` may emit on behalf of
   its public interface. If a future Qt makes signals protected again, add small
   emit-helper methods on `AIMcpServer`.
+
+Built here against gcc 16.2.0, CMake 4.4.2, Ninja 1.13.2, Qt5 + PySide2/Shiboken2
+from the Natron pacman repo. Note that CMake resolved **Python 3.14.7 (MinGW)**,
+not the 3.10 the official installers ship -- a concrete reminder that the bundled
+Python version is not something to build assumptions on.
 
 ## Smoke-testing the MCP server without an agent
 
