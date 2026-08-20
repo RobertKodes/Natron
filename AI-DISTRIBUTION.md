@@ -13,6 +13,45 @@ installer ships Python 3.10 and its own DLL set. The executable will not load.
 That is the cost of the C++ route (PRD #2, Option C). It buys grouped undo and a
 native in-application panel; it is paid for at distribution time.
 
+## The installer (what to hand someone)
+
+`dist\NatronAI-Setup.exe` — **83.5 MB**, a normal Windows installer. Double-click,
+next-next-finish, and there is a *Natron AI* icon on the desktop and in the Start
+menu, plus an entry in Add/Remove Programs.
+
+Build it after running the packaging script:
+
+```
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" tools\natron-ai-installer.iss
+```
+
+### The shortcuts point straight at Natron.exe
+
+No `.bat` wrapper and no environment variables, so nothing flashes a console
+window on launch. That works because Natron resolves everything it needs relative
+to its own executable:
+
+- `Engine/OfxHost.cpp:890-892` — `applicationDirPath()`, `cdUp()`, then
+  `/Plugins/OFX/Natron`. The package puts binaries in `bin\`, so this lands
+  exactly on the shipped plug-ins.
+- `Engine/Settings.cpp:100` — `<bin>/../Resources/OpenColorIO-Configs`.
+
+Verified rather than assumed: 162 plug-ins load from an installed copy with
+`OFX_PLUGIN_PATH` and `OCIO` unset and not even `bin` on `PATH`.
+
+### Verified behaviour
+
+- Silent install to a chosen directory: 4922 files, exit code 0.
+- Desktop and Start-menu shortcuts created, targets valid.
+- Uninstall removes everything — the log ends `Removed all? Yes` with zero files
+  left. Note that Inno's uninstaller relaunches itself from `%TEMP%`, so the
+  process you started returns immediately while deletion continues; checking the
+  directory straight afterwards makes a clean uninstall look like a failure.
+- An elevated (all-users) install puts the icon in `C:\Users\Public\Desktop`,
+  which Windows shows on every user's desktop.
+  `PrivilegesRequiredOverridesAllowed=dialog` lets someone without admin rights
+  install into their own profile instead.
+
 ## What `tools/package-natron-ai.sh` produces
 
 Run from the MSYS2 MINGW64 shell:
