@@ -75,6 +75,7 @@ SOURCES += \
     AboutWindow.cpp \
     ActionShortcuts.cpp \
     AddKnobDialog.cpp \
+    AIAgentBackend.cpp \
     AIMcpServer.cpp \
     AnimatedCheckBox.cpp \
     AutoHideToolBar.cpp \
@@ -228,6 +229,7 @@ HEADERS += \
     AboutWindow.h \
     ActionShortcuts.h \
     AddKnobDialog.h \
+    AIAgentBackend.h \
     AIMcpServer.h \
     AnimatedCheckBox.h \
     AutoHideToolBar.h \
