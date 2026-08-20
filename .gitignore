@@ -305,3 +305,4 @@ Gui/Qt5
 .claude/
 GOAL.md
 build/
+dist/
