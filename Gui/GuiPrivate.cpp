@@ -172,6 +172,7 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , actionImportLayout(0)
     , actionExportLayout(0)
     , actionRestoreDefaultLayout(0)
+    , actionShowAIChatPanel(0)
     , actionNextTab(0)
     , actionPrevTab(0)
     , actionCloseTab(0)

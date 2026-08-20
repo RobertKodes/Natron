@@ -659,6 +659,12 @@ public Q_SLOTS:
 
     void restoreDefaultLayout();
 
+    /**
+     * @brief Brings the AI Assistant panel into view, docking it next to the
+     * node graph if it is not in a pane yet.
+     **/
+    void ensureAIChatPanelVisible();
+
     void onFreezeUIButtonClicked(bool clicked);
 
     void refreshAllTimeEvaluationParams(bool onlyTimeEvaluationKnobs);

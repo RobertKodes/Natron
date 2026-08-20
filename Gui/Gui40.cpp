@@ -777,6 +777,35 @@ Gui::ensureScriptEditorVisible()
     }
 }
 
+void
+Gui::ensureAIChatPanelVisible()
+{
+    if (!_imp->_aiChatPanel) {
+        return;
+    }
+
+    TabWidget* pane = _imp->_aiChatPanel->getParentPane();
+
+    if (pane != 0) {
+        pane->setCurrentWidget(_imp->_aiChatPanel);
+    } else {
+        pane = _imp->_nodeGraphArea->getParentPane();
+        if (!pane) {
+            std::list<TabWidget*> tabs;
+            {
+                QMutexLocker k(&_imp->_panesMutex);
+                tabs = _imp->_panes;
+            }
+            if ( tabs.empty() ) {
+                return;
+            }
+            pane = tabs.front();
+        }
+        assert(pane);
+        pane->moveAIChatPanelHere();
+    }
+}
+
 PanelWidget*
 Gui::ensureProgressPanelVisible()
 {

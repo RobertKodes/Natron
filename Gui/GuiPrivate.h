@@ -123,6 +123,7 @@ public:
     ActionWithShortcut* actionImportLayout;
     ActionWithShortcut* actionExportLayout;
     ActionWithShortcut* actionRestoreDefaultLayout;
+    QAction* actionShowAIChatPanel;
     ActionWithShortcut* actionNextTab;
     ActionWithShortcut* actionPrevTab;
     ActionWithShortcut* actionCloseTab;
