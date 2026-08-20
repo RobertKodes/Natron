@@ -10,10 +10,15 @@ Exercises, in order: the bearer-token check, `initialize`, `tools/list`, and the
 two read-only tools. That covers the transport, the auth gate, the hop onto the
 GUI thread and the tool dispatch -- everything except the agent CLI.
 
-Read-only by default. Pass --mutate to additionally create a Grade node, set a
+Read-only by default. Pass --mutate to additionally create a node, set a
 parameter on it and delete it again; with the panel open you should see one
 approval dialog for the delete, and the whole sequence should collapse into a
-single Ctrl+Z.
+single Ctrl+Z. --mutate needs a project open in Natron.
+
+The default --plugin is a built-in Dot, which exists even with no OpenFX
+plug-ins installed. A stock source build has no OFX plug-ins at all, so
+net.sf.openfx.GradePlugin and everything else from openfx-misc will report
+PLUGIN_NOT_FOUND until those bundles are on OFX_PLUGIN_PATH.
 
 Only the Python standard library is used, so this runs with any Python 3.
 """
@@ -102,7 +107,12 @@ def main():
     parser.add_argument("url", help="e.g. http://127.0.0.1:52341/mcp")
     parser.add_argument("token", help="bearer token from the AI Assistant panel")
     parser.add_argument("--mutate", action="store_true",
-                        help="also create, edit and delete a Grade node")
+                        help="also create and delete a node (needs a project open)")
+    parser.add_argument("--plugin", default="fr.inria.built-in.Dot",
+                        help="plugin to create with --mutate. The default is a "
+                             "built-in node, so it works even with no OpenFX "
+                             "plug-ins installed. net.sf.openfx.GradePlugin and "
+                             "friends require openfx-misc to be present.")
     args = parser.parse_args()
 
     failures = 0
@@ -152,20 +162,27 @@ def main():
 
     if args.mutate:
         ok, node = call_tool(args.url, args.token, "node_create",
-                             {"pluginID": "net.sf.openfx.GradePlugin",
-                              "x": 0, "y": 0})
-        if not show("node_create Grade", ok, node):
+                             {"pluginID": args.plugin, "x": 0, "y": 0})
+        if not show("node_create %s" % args.plugin, ok, node):
             failures += 1
         elif isinstance(node, dict) and node.get("scriptName"):
             script_name = node["scriptName"]
 
-            ok, payload = call_tool(args.url, args.token, "param_set",
-                                    {"node": script_name,
-                                     "param": "blackPoint",
-                                     "value": 0.02,
-                                     "dimension": 0})
-            if not show("param_set blackPoint=0.02", ok, payload):
-                failures += 1
+            # Only attempt a write if the node actually has that parameter --
+            # a Dot has none, a Grade has blackPoint.
+            ok, payload = call_tool(args.url, args.token, "param_get",
+                                    {"node": script_name, "param": "blackPoint"})
+            if ok:
+                ok, payload = call_tool(args.url, args.token, "param_set",
+                                        {"node": script_name,
+                                         "param": "blackPoint",
+                                         "value": 0.02,
+                                         "dimension": 0})
+                if not show("param_set blackPoint=0.02", ok, payload):
+                    failures += 1
+            else:
+                print("[skip] %s has no 'blackPoint'; skipping param_set\n"
+                      % args.plugin)
 
             print(">>> a confirmation dialog should appear in Natron now")
             ok, payload = call_tool(args.url, args.token, "node_delete",

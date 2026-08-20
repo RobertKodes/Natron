@@ -71,6 +71,15 @@ public:
     /// Starts the MCP server and the agent process if they are not up yet.
     void ensureStarted();
 
+    /**
+     * @brief Called when this panel becomes the visible tab.
+     *
+     * Starting here rather than on the first message means the MCP endpoint and
+     * token are printed as soon as the panel is opened, so the server can be
+     * driven by hand even when no agent CLI is installed.
+     **/
+    virtual void onPanelMadeCurrent() OVERRIDE FINAL;
+
 public Q_SLOTS:
 
     void onSendClicked();

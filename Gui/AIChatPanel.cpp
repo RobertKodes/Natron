@@ -305,6 +305,16 @@ AIChatPanel::ensureStarted()
 
             return;
         }
+
+        // Print the endpoint and token into the transcript so the server can be
+        // driven by hand (tools/ai-mcp-smoketest.py) without an agent. Loopback
+        // only, and the token dies with the panel.
+        _imp->appendHtml( QString::fromUtf8("<p style=\"color:#888;\"><i>%1</i><br/>"
+                                            "MCP: <code>%2</code><br/>"
+                                            "Token: <code>%3</code></p>")
+                          .arg( tr("Local MCP server started (loopback only).") )
+                          .arg( _imp->server->url() )
+                          .arg( _imp->server->token() ) );
     }
 
     if ( _imp->backend->isRunning() ) {
@@ -339,6 +349,12 @@ AIChatPanel::ensureStarted()
     if ( _imp->backend->start( cwd, _imp->server->url(), _imp->server->token() ) ) {
         _imp->setStatus( tr("%1 - connected").arg( _imp->backend->displayName() ) );
     }
+}
+
+void
+AIChatPanel::onPanelMadeCurrent()
+{
+    ensureStarted();
 }
 
 void
