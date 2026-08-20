@@ -48,6 +48,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Knob.h"
@@ -144,6 +145,13 @@ struct AIMcpServerPrivate
     QJsonObject toolNodeDelete(const QJsonObject& a);
     QJsonObject toolParamGet(const QJsonObject& a);
     QJsonObject toolParamSet(const QJsonObject& a);
+    QJsonObject toolParamSetExpression(const QJsonObject& a);
+    QJsonObject toolParamSetKeyframe(const QJsonObject& a);
+    QJsonObject toolParamClearAnimation(const QJsonObject& a);
+    QJsonObject toolNodeSetPosition(const QJsonObject& a);
+    QJsonObject toolNodeRename(const QJsonObject& a);
+    QJsonObject toolPluginSearch(const QJsonObject& a);
+    QJsonObject toolScriptExec(const QJsonObject& a);
 
     // --- helpers -----------------------------------------------------------
     AppInstancePtr app() const;
@@ -189,7 +197,13 @@ AIMcpServerPrivate::toolMutates(const QString& toolName)
     return ( toolName == QString::fromUtf8("node_create") ) ||
            ( toolName == QString::fromUtf8("node_connect") ) ||
            ( toolName == QString::fromUtf8("node_delete") ) ||
-           ( toolName == QString::fromUtf8("param_set") );
+           ( toolName == QString::fromUtf8("node_rename") ) ||
+           ( toolName == QString::fromUtf8("node_set_position") ) ||
+           ( toolName == QString::fromUtf8("param_set") ) ||
+           ( toolName == QString::fromUtf8("param_set_expression") ) ||
+           ( toolName == QString::fromUtf8("param_set_keyframe") ) ||
+           ( toolName == QString::fromUtf8("param_clear_animation") ) ||
+           ( toolName == QString::fromUtf8("script_exec") );
 }
 
 AppInstancePtr
@@ -687,6 +701,225 @@ AIMcpServerPrivate::toolParamSet(const QJsonObject& a)
     return readKnob(knob);
 }
 
+QJsonObject
+AIMcpServerPrivate::toolPluginSearch(const QJsonObject& a)
+{
+    // Without this the agent has to guess plugin IDs, and a wrong guess is
+    // indistinguishable from a broken tool. Everything installed is listed here.
+    const QString query = a[QString::fromUtf8("query")].toString().trimmed();
+    int limit = a.contains( QString::fromUtf8("limit") )
+                ? (int)a[QString::fromUtf8("limit")].toDouble() : 40;
+
+    if (limit <= 0) {
+        limit = 40;
+    }
+
+    // AppManager::getPluginIDs() hands back std::list<std::string>.
+    const std::list<std::string> all = appPTR->getPluginIDs();
+    QStringList ids;
+    for (std::list<std::string>::const_iterator it = all.begin(); it != all.end(); ++it) {
+        const QString id = QString::fromUtf8( it->c_str() );
+        if ( query.isEmpty() || id.contains(query, Qt::CaseInsensitive) ) {
+            ids.push_back(id);
+        }
+    }
+    ids.sort(Qt::CaseInsensitive);
+
+    QJsonArray arr;
+    for (int i = 0; i < ids.size() && i < limit; ++i) {
+        arr.push_back( ids.at(i) );
+    }
+
+    QJsonObject o;
+    o[QString::fromUtf8("plugins")] = arr;
+    o[QString::fromUtf8("matched")] = ids.size();
+    o[QString::fromUtf8("returned")] = arr.size();
+    o[QString::fromUtf8("totalInstalled")] = (int)all.size();
+    if ( ids.size() > arr.size() ) {
+        o[QString::fromUtf8("note")] =
+            QString::fromUtf8("Truncated; refine 'query' or raise 'limit'.");
+    }
+
+    return o;
+}
+
+QJsonObject
+AIMcpServerPrivate::toolParamSetExpression(const QJsonObject& a)
+{
+    NodePtr node = requireNode( a[QString::fromUtf8("node")].toString() );
+    KnobIPtr knob = requireKnob( node, a[QString::fromUtf8("param")].toString() );
+
+    const QString expr = a[QString::fromUtf8("expr")].toString();
+    const int dimension = a.contains( QString::fromUtf8("dimension") )
+                          ? (int)a[QString::fromUtf8("dimension")].toDouble() : 0;
+    // A multi-line script must assign to `ret`; a single expression must not.
+    const bool hasRet = a.contains( QString::fromUtf8("hasRetVariable") )
+                        ? a[QString::fromUtf8("hasRetVariable")].toBool()
+                        : expr.contains( QString::fromUtf8("ret") ) && expr.contains( QLatin1Char('\n') );
+
+    if ( ( dimension < 0 ) || ( dimension >= knob->getDimension() ) ) {
+        throw ToolError( QString::fromUtf8("PARAM_TYPE_MISMATCH"),
+                         QString::fromUtf8("Dimension %1 is out of range for '%2' (%3 dimension(s))")
+                         .arg(dimension)
+                         .arg( QString::fromUtf8( knob->getName().c_str() ) )
+                         .arg( knob->getDimension() ) );
+    }
+
+    try {
+        knob->setExpression(dimension, expr.toStdString(), hasRet, false);
+    } catch (const std::exception& e) {
+        throw ToolError( QString::fromUtf8("EXPRESSION_INVALID"),
+                         QString::fromUtf8("Natron rejected the expression: %1").arg( QString::fromUtf8( e.what() ) ),
+                         QString::fromUtf8("Natron expressions are Python evaluated in the parameter's context; "
+                                           "'frame' is the current frame. A single expression must evaluate to a "
+                                           "value; a multi-line script must assign to 'ret' and be sent with "
+                                           "hasRetVariable=true.") );
+    }
+
+    return readKnob(knob);
+}
+
+QJsonObject
+AIMcpServerPrivate::toolParamSetKeyframe(const QJsonObject& a)
+{
+    NodePtr node = requireNode( a[QString::fromUtf8("node")].toString() );
+    KnobIPtr knob = requireKnob( node, a[QString::fromUtf8("param")].toString() );
+
+    const double frame = a[QString::fromUtf8("frame")].toDouble();
+    const int dimension = a.contains( QString::fromUtf8("dimension") )
+                          ? (int)a[QString::fromUtf8("dimension")].toDouble() : 0;
+    const QJsonValue value = a[QString::fromUtf8("value")];
+    const QString name = QString::fromUtf8( knob->getName().c_str() );
+
+    if ( ( dimension < 0 ) || ( dimension >= knob->getDimension() ) ) {
+        throw ToolError( QString::fromUtf8("PARAM_TYPE_MISMATCH"),
+                         QString::fromUtf8("Dimension %1 is out of range for '%2'").arg(dimension).arg(name) );
+    }
+
+    KnobIntBasePtr    asInt    = std::dynamic_pointer_cast<KnobIntBase>(knob);
+    KnobBoolBasePtr   asBool   = std::dynamic_pointer_cast<KnobBoolBase>(knob);
+    KnobDoubleBasePtr asDouble = std::dynamic_pointer_cast<KnobDoubleBase>(knob);
+    KnobStringBasePtr asString = std::dynamic_pointer_cast<KnobStringBase>(knob);
+
+    // Choice derives from KnobIntBase, so it is handled by the int branch using
+    // the option index.
+    if (asInt) {
+        asInt->setValueAtTime(frame, (int)value.toDouble(), ViewSpec::all(), dimension);
+    } else if (asBool) {
+        asBool->setValueAtTime(frame, value.toBool(), ViewSpec::all(), dimension);
+    } else if (asDouble) {
+        asDouble->setValueAtTime(frame, value.toDouble(), ViewSpec::all(), dimension);
+    } else if (asString) {
+        asString->setValueAtTime(frame, value.toString().toStdString(), ViewSpec::all(), dimension);
+    } else {
+        throw ToolError( QString::fromUtf8("PARAM_NOT_ANIMATABLE"),
+                         QString::fromUtf8("Parameter '%1' (type %2) cannot hold keyframes")
+                         .arg(name).arg( QString::fromUtf8( knob->typeName().c_str() ) ) );
+    }
+
+    QJsonObject o = readKnob(knob);
+    o[QString::fromUtf8("keyframeSetAt")] = frame;
+
+    return o;
+}
+
+QJsonObject
+AIMcpServerPrivate::toolParamClearAnimation(const QJsonObject& a)
+{
+    NodePtr node = requireNode( a[QString::fromUtf8("node")].toString() );
+    KnobIPtr knob = requireKnob( node, a[QString::fromUtf8("param")].toString() );
+
+    const int dims = knob->getDimension();
+    const int only = a.contains( QString::fromUtf8("dimension") )
+                     ? (int)a[QString::fromUtf8("dimension")].toDouble() : -1;
+
+    for (int d = 0; d < dims; ++d) {
+        if ( ( only >= 0 ) && ( d != only ) ) {
+            continue;
+        }
+        knob->removeAnimation(ViewSpec::all(), d);
+    }
+
+    return readKnob(knob);
+}
+
+QJsonObject
+AIMcpServerPrivate::toolNodeSetPosition(const QJsonObject& a)
+{
+    NodePtr node = requireNode( a[QString::fromUtf8("node")].toString() );
+
+    // Unlike a headless session, this server always runs inside the GUI, so the
+    // node really does have a NodeGui and the position sticks.
+    node->setPosition( a[QString::fromUtf8("x")].toDouble(),
+                       a[QString::fromUtf8("y")].toDouble() );
+
+    double x = 0., y = 0.;
+    node->getPosition(&x, &y);
+
+    QJsonObject o = describeNode(node);
+    QJsonArray pos;
+    pos.push_back(x);
+    pos.push_back(y);
+    o[QString::fromUtf8("position")] = pos;
+
+    return o;
+}
+
+QJsonObject
+AIMcpServerPrivate::toolNodeRename(const QJsonObject& a)
+{
+    NodePtr node = requireNode( a[QString::fromUtf8("node")].toString() );
+
+    if ( a.contains( QString::fromUtf8("label") ) ) {
+        node->setLabel( a[QString::fromUtf8("label")].toString().toStdString() );
+    }
+    if ( a.contains( QString::fromUtf8("scriptName") ) ) {
+        const QString wanted = a[QString::fromUtf8("scriptName")].toString();
+        try {
+            node->setScriptName( wanted.toStdString() );
+        } catch (const std::exception& e) {
+            throw ToolError( QString::fromUtf8("SCRIPTNAME_INVALID"),
+                             QString::fromUtf8("Could not rename to '%1': %2")
+                             .arg(wanted).arg( QString::fromUtf8( e.what() ) ),
+                             QString::fromUtf8("Script names must be unique and contain only letters, digits and underscores.") );
+        }
+    }
+
+    return describeNode(node);
+}
+
+QJsonObject
+AIMcpServerPrivate::toolScriptExec(const QJsonObject& a)
+{
+    // The escape hatch. Anything the typed tools do not cover -- expressions on
+    // exotic knobs, roto shapes, trackers, rendering, batch edits -- is reachable
+    // from here, because this is the same interpreter the Script Editor uses.
+    const QString code = a[QString::fromUtf8("code")].toString();
+
+    if ( code.trimmed().isEmpty() ) {
+        throw ToolError( QString::fromUtf8("SCRIPT_EMPTY"),
+                         QString::fromUtf8("No code was supplied") );
+    }
+
+    std::string error, output;
+    const bool ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(code.toStdString(), &error, &output);
+
+    QJsonObject o;
+    o[QString::fromUtf8("ok")] = ok;
+    o[QString::fromUtf8("stdout")] = QString::fromUtf8( output.c_str() );
+
+    if (!ok) {
+        throw ToolError( QString::fromUtf8("SCRIPT_FAILED"),
+                         QString::fromUtf8( error.empty()
+                                            ? "The script failed with no message"
+                                            : error.c_str() ),
+                         QString::fromUtf8("'app' is the current project. Output printed with print() "
+                                           "is returned in 'stdout'.") );
+    }
+
+    return o;
+}
+
 // ---------------------------------------------------------------------------
 // Tool catalogue
 // ---------------------------------------------------------------------------
@@ -824,6 +1057,102 @@ AIMcpServerPrivate::toolsList() const
                                    props, req, false, false ) );
     }
 
+    {
+        QJsonObject props;
+        props[QString::fromUtf8("query")] = makeProperty( QString::fromUtf8("string"),
+                                                          QString::fromUtf8("Case-insensitive substring of the plugin ID, e.g. 'text', 'blur', 'merge'. Omit to list everything.") );
+        props[QString::fromUtf8("limit")] = makeProperty( QString::fromUtf8("integer"),
+                                                          QString::fromUtf8("Maximum results, default 40.") );
+        tools.push_back( makeTool( QString::fromUtf8("plugin_search"),
+                                   QString::fromUtf8("List or search the plugin IDs actually installed. Call this before node_create instead of guessing an ID."),
+                                   props, QJsonArray(), true, false ) );
+    }
+
+    {
+        QJsonObject props;
+        props[QString::fromUtf8("node")] = makeProperty( QString::fromUtf8("string"), QString::fromUtf8("Script name of the node.") );
+        props[QString::fromUtf8("param")] = makeProperty( QString::fromUtf8("string"), QString::fromUtf8("Script name of the parameter.") );
+        props[QString::fromUtf8("expr")] = makeProperty( QString::fromUtf8("string"),
+                                                         QString::fromUtf8("Natron expression, Python evaluated per frame. 'frame' is the current frame, e.g. 'frame / 144.0 * 250000'.") );
+        props[QString::fromUtf8("dimension")] = makeProperty( QString::fromUtf8("integer"), QString::fromUtf8("Dimension to drive, default 0.") );
+        props[QString::fromUtf8("hasRetVariable")] = makeProperty( QString::fromUtf8("boolean"),
+                                                                   QString::fromUtf8("True when the code is a multi-line script assigning to 'ret'.") );
+        QJsonArray req;
+        req.push_back( QString::fromUtf8("node") );
+        req.push_back( QString::fromUtf8("param") );
+        req.push_back( QString::fromUtf8("expr") );
+        tools.push_back( makeTool( QString::fromUtf8("param_set_expression"),
+                                   QString::fromUtf8("Drive a parameter with an expression, for values that change over time."),
+                                   props, req, false, false ) );
+    }
+
+    {
+        QJsonObject props;
+        props[QString::fromUtf8("node")] = makeProperty( QString::fromUtf8("string"), QString::fromUtf8("Script name of the node.") );
+        props[QString::fromUtf8("param")] = makeProperty( QString::fromUtf8("string"), QString::fromUtf8("Script name of the parameter.") );
+        props[QString::fromUtf8("value")] = makeProperty( QString::fromUtf8("number"), QString::fromUtf8("Value at that frame.") );
+        props[QString::fromUtf8("frame")] = makeProperty( QString::fromUtf8("number"), QString::fromUtf8("Frame number.") );
+        props[QString::fromUtf8("dimension")] = makeProperty( QString::fromUtf8("integer"), QString::fromUtf8("Dimension, default 0.") );
+        QJsonArray req;
+        req.push_back( QString::fromUtf8("node") );
+        req.push_back( QString::fromUtf8("param") );
+        req.push_back( QString::fromUtf8("value") );
+        req.push_back( QString::fromUtf8("frame") );
+        tools.push_back( makeTool( QString::fromUtf8("param_set_keyframe"),
+                                   QString::fromUtf8("Set a keyframe on a parameter at a given frame."),
+                                   props, req, false, false ) );
+    }
+
+    {
+        QJsonObject props;
+        props[QString::fromUtf8("node")] = makeProperty( QString::fromUtf8("string"), QString::fromUtf8("Script name of the node.") );
+        props[QString::fromUtf8("param")] = makeProperty( QString::fromUtf8("string"), QString::fromUtf8("Script name of the parameter.") );
+        props[QString::fromUtf8("dimension")] = makeProperty( QString::fromUtf8("integer"), QString::fromUtf8("Only this dimension; omit for all.") );
+        QJsonArray req;
+        req.push_back( QString::fromUtf8("node") );
+        req.push_back( QString::fromUtf8("param") );
+        tools.push_back( makeTool( QString::fromUtf8("param_clear_animation"),
+                                   QString::fromUtf8("Remove all keyframes from a parameter."),
+                                   props, req, false, true ) );
+    }
+
+    {
+        QJsonObject props;
+        props[QString::fromUtf8("node")] = makeProperty( QString::fromUtf8("string"), QString::fromUtf8("Script name of the node.") );
+        props[QString::fromUtf8("x")] = makeProperty( QString::fromUtf8("number"), QString::fromUtf8("X position in the node graph.") );
+        props[QString::fromUtf8("y")] = makeProperty( QString::fromUtf8("number"), QString::fromUtf8("Y position in the node graph.") );
+        QJsonArray req;
+        req.push_back( QString::fromUtf8("node") );
+        req.push_back( QString::fromUtf8("x") );
+        req.push_back( QString::fromUtf8("y") );
+        tools.push_back( makeTool( QString::fromUtf8("node_set_position"),
+                                   QString::fromUtf8("Move a node in the node graph so the layout stays readable."),
+                                   props, req, false, false ) );
+    }
+
+    {
+        QJsonObject props;
+        props[QString::fromUtf8("node")] = makeProperty( QString::fromUtf8("string"), QString::fromUtf8("Current script name.") );
+        props[QString::fromUtf8("label")] = makeProperty( QString::fromUtf8("string"), QString::fromUtf8("New display label.") );
+        props[QString::fromUtf8("scriptName")] = makeProperty( QString::fromUtf8("string"), QString::fromUtf8("New script name (letters, digits, underscore; must be unique).") );
+        QJsonArray req;
+        req.push_back( QString::fromUtf8("node") );
+        tools.push_back( makeTool( QString::fromUtf8("node_rename"),
+                                   QString::fromUtf8("Rename a node's label and/or script name."),
+                                   props, req, false, false ) );
+    }
+
+    {
+        QJsonObject props;
+        props[QString::fromUtf8("code")] = makeProperty( QString::fromUtf8("string"),
+                                                         QString::fromUtf8("Python source, run in Natron's own interpreter. 'app' is the current project.") );
+        QJsonArray req;
+        req.push_back( QString::fromUtf8("code") );
+        tools.push_back( makeTool( QString::fromUtf8("script_exec"),
+                                   QString::fromUtf8("Run Python inside Natron. Use this for anything the other tools do not cover: roto, tracking, rendering, batch edits, or any parameter API. Same interpreter as the Script Editor."),
+                                   props, req, false, true ) );
+    }
+
     QJsonObject result;
     result[QString::fromUtf8("tools")] = tools;
 
@@ -858,6 +1187,27 @@ AIMcpServerPrivate::handleToolCall(const QString& toolName,
     }
     if ( toolName == QString::fromUtf8("param_set") ) {
         return toolParamSet(args);
+    }
+    if ( toolName == QString::fromUtf8("param_set_expression") ) {
+        return toolParamSetExpression(args);
+    }
+    if ( toolName == QString::fromUtf8("param_set_keyframe") ) {
+        return toolParamSetKeyframe(args);
+    }
+    if ( toolName == QString::fromUtf8("param_clear_animation") ) {
+        return toolParamClearAnimation(args);
+    }
+    if ( toolName == QString::fromUtf8("node_set_position") ) {
+        return toolNodeSetPosition(args);
+    }
+    if ( toolName == QString::fromUtf8("node_rename") ) {
+        return toolNodeRename(args);
+    }
+    if ( toolName == QString::fromUtf8("plugin_search") ) {
+        return toolPluginSearch(args);
+    }
+    if ( toolName == QString::fromUtf8("script_exec") ) {
+        return toolScriptExec(args);
     }
 
     throw ToolError( QString::fromUtf8("UNKNOWN_TOOL"),
