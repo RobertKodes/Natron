@@ -94,6 +94,25 @@ public:
     /// Convenience: "http://127.0.0.1:<port>/mcp"
     QString url() const;
 
+    /**
+     * @brief Opens an undo macro on the node graph's stack, so that every
+     * mutation the agent makes until the matching endAgentTransaction() collapses
+     * into a single Ctrl+Z entry labelled "AI: <label>".
+     *
+     * Re-entrant: nested calls are counted and only the outermost pair actually
+     * opens and closes the macro.
+     *
+     * Prefer AIUndoTransaction over calling this directly -- an unmatched
+     * beginMacro leaves the stack wedged open for the rest of the session.
+     **/
+    void beginAgentTransaction(const QString& label);
+
+    /// Closes the macro opened by beginAgentTransaction(). Safe if none is open.
+    void endAgentTransaction();
+
+    /// True while an agent transaction is open.
+    bool isInAgentTransaction() const;
+
 Q_SIGNALS:
 
     /**
@@ -134,6 +153,43 @@ private:
     std::unique_ptr<AIMcpServerPrivate> _imp;
 
     friend struct AIMcpServerPrivate;
+};
+
+/**
+ * @brief RAII guard around AIMcpServer::beginAgentTransaction().
+ *
+ * This is not a convenience: QUndoStack::beginMacro() without a matching
+ * endMacro() leaves the stack open permanently -- Undo and Redo stay disabled and
+ * every later command is swallowed into the orphaned macro. An early return or a
+ * thrown ToolError between the two would do exactly that, so the close must
+ * happen in a destructor.
+ */
+class AIUndoTransaction
+{
+public:
+
+    AIUndoTransaction(AIMcpServer* server,
+                      const QString& label)
+        : _server(server)
+    {
+        if (_server) {
+            _server->beginAgentTransaction(label);
+        }
+    }
+
+    ~AIUndoTransaction()
+    {
+        if (_server) {
+            _server->endAgentTransaction();
+        }
+    }
+
+private:
+
+    AIUndoTransaction(const AIUndoTransaction&) = delete;
+    AIUndoTransaction& operator=(const AIUndoTransaction&) = delete;
+
+    AIMcpServer* _server;
 };
 
 NATRON_NAMESPACE_EXIT

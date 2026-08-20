@@ -42,6 +42,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QtNetwork/QHostAddress>
 #include <QtNetwork/QTcpServer>
 #include <QtNetwork/QTcpSocket>
+#include <QUndoStack>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -57,6 +58,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/NodeGraph.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -101,6 +103,12 @@ struct AIMcpServerPrivate
     QString token;
     std::map<QTcpSocket*, QByteArray> buffers;
 
+    // Undo transaction state. txStack is remembered rather than re-resolved so
+    // that endMacro() always lands on the very stack beginMacro() was called on,
+    // even if the user switches graph mid-turn.
+    int txDepth;
+    QUndoStack* txStack;
+
     AIMcpServerPrivate(AIMcpServer* publicInterface,
                        Gui* g)
         : _publicInterface(publicInterface)
@@ -108,8 +116,16 @@ struct AIMcpServerPrivate
         , server(0)
         , token()
         , buffers()
+        , txDepth(0)
+        , txStack(0)
     {
     }
+
+    /// The undo stack agent mutations should be grouped on, or NULL.
+    QUndoStack* agentUndoStack() const;
+
+    /// True for tools that mutate the graph and therefore need a transaction.
+    static bool toolMutates(const QString& toolName);
 
     /// Runs one request, hopping to the GUI thread when necessary.
     QString dispatch(const QString& requestJson);
@@ -153,6 +169,27 @@ struct AIMcpServerPrivate
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+QUndoStack*
+AIMcpServerPrivate::agentUndoStack() const
+{
+    if (!gui) {
+        return 0;
+    }
+
+    NodeGraph* graph = gui->getNodeGraph();
+
+    return graph ? graph->getUndoStack() : 0;
+}
+
+bool
+AIMcpServerPrivate::toolMutates(const QString& toolName)
+{
+    return ( toolName == QString::fromUtf8("node_create") ) ||
+           ( toolName == QString::fromUtf8("node_connect") ) ||
+           ( toolName == QString::fromUtf8("node_delete") ) ||
+           ( toolName == QString::fromUtf8("param_set") );
+}
 
 AppInstancePtr
 AIMcpServerPrivate::app() const
@@ -877,6 +914,21 @@ AIMcpServerPrivate::handleRequest(const QJsonObject& request)
 
         bool ok = true;
         try {
+            // Group this tool's undo commands. The guard is re-entrant, so when
+            // the chat panel has already opened a transaction for the whole
+            // conversation turn this nests harmlessly and the turn stays a
+            // single Ctrl+Z; when the server is driven directly by an external
+            // CLI (no panel) each mutating tool still gets one clean entry.
+            //
+            // The guard is a stack object on purpose: if handleToolCall throws
+            // -- which it does for every domain error -- the destructor still
+            // closes the macro. An unmatched beginMacro would wedge undo for the
+            // rest of the session.
+            std::unique_ptr<AIUndoTransaction> tx;
+            if ( toolMutates(toolName) ) {
+                tx.reset( new AIUndoTransaction(_publicInterface, toolName) );
+            }
+
             const QJsonObject payload = handleToolCall(toolName, args);
             textBlock[QString::fromUtf8("text")] =
                 QString::fromUtf8( QJsonDocument(payload).toJson(QJsonDocument::Compact) );
@@ -1105,6 +1157,62 @@ QString
 AIMcpServer::token() const
 {
     return _imp->token;
+}
+
+void
+AIMcpServer::beginAgentTransaction(const QString& label)
+{
+    // Must run where the undo stack lives.
+    assert( QThread::currentThread() == qApp->thread() );
+
+    if (_imp->txDepth == 0) {
+        QUndoStack* stack = _imp->agentUndoStack();
+        if (stack) {
+            // Qt still calls redo() on each pushed command inside a macro, so
+            // the graph updates live; only the *stack* collapses to one entry.
+            stack->beginMacro( tr("AI: %1").arg(label) );
+            _imp->txStack = stack;
+        } else {
+            // No graph yet (no project open). Still count the nesting so the
+            // matching end() call stays balanced.
+            _imp->txStack = 0;
+        }
+    }
+    ++_imp->txDepth;
+}
+
+void
+AIMcpServer::endAgentTransaction()
+{
+    assert( QThread::currentThread() == qApp->thread() );
+
+    if (_imp->txDepth == 0) {
+        return;
+    }
+
+    --_imp->txDepth;
+
+    if (_imp->txDepth == 0) {
+        if (_imp->txStack) {
+            // Close on the stack we opened, not on whatever is current now.
+            //
+            // Known wart: Qt pushes the macro command even when nothing was
+            // added to it, so a turn in which every tool failed before mutating
+            // anything leaves one inert "AI: ..." entry on the stack. QUndoStack
+            // offers no way to cancel a macro once begun, and undoing it here
+            // would just move the empty command to the redo side. It is
+            // cosmetic -- undoing it is a no-op -- and it is strictly preferable
+            // to the alternative failure mode of leaving the macro open.
+            _imp->txStack->endMacro();
+            _imp->txStack = 0;
+        }
+    }
+}
+
+bool
+AIMcpServer::isInAgentTransaction() const
+{
+    return _imp->txDepth > 0;
 }
 
 QString
