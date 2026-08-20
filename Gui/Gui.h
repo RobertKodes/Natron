@@ -353,6 +353,8 @@ public:
     CurveEditor* getCurveEditor() const;
     DopeSheetEditor * getDopeSheetEditor() const;
     ScriptEditor* getScriptEditor() const;
+
+    AIChatPanel* getAIChatPanel() const;
     ProgressPanel* getProgressPanel() const;
     QVBoxLayout* getPropertiesLayout() const;
     PropertiesBinWrapper* getPropertiesBin() const;

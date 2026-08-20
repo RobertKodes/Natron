@@ -66,6 +66,7 @@
 #include "Gui/ProgressPanel.h"
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
+#include "Gui/AIChatPanel.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
@@ -551,6 +552,12 @@ ScriptEditor*
 Gui::getScriptEditor() const
 {
     return _imp->_scriptEditor;
+}
+
+AIChatPanel*
+Gui::getAIChatPanel() const
+{
+    return _imp->_aiChatPanel;
 }
 
 ProgressPanel*
