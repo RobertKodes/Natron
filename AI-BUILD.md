@@ -90,7 +90,7 @@ automatically. They were also added to `Gui/Gui.pro` by hand (lines 78-80 and
 
 | File | Purpose |
 |---|---|
-| `Gui/AIMcpServer.h/.cpp` | MCP (JSON-RPC 2.0) server over loopback HTTP with a bearer token; 7 tools; grouped-undo transactions |
+| `Gui/AIMcpServer.h/.cpp` | MCP (JSON-RPC 2.0) server over loopback HTTP with a bearer token; 15 tools (graph, params, expressions, keyframes, `plugin_search`, `script_exec`); grouped-undo transactions |
 | `Gui/AIAgentBackend.h/.cpp` | Abstract agent backend + `ClaudeCodeBackend` driving the `claude` CLI over stream-json |
 | `Gui/AIChatPanel.h/.cpp` | The dockable "AI Assistant" panel |
 

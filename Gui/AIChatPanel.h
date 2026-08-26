@@ -32,12 +32,14 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QUrl>
 #include <QWidget>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Global/QtCompat.h"
 
+#include "Gui/AIConnectionSettings.h"
 #include "Gui/PanelWidget.h"
 #include "Gui/GuiFwd.h"
 
@@ -47,14 +49,8 @@ struct AIChatPanelPrivate;
 
 /**
  * @brief Dockable "AI Assistant" panel: a native Qt chat driving an external
- * agent CLI, which in turn drives Natron through AIMcpServer.
- *
- * The agent is not "inside" Natron -- Natron gives it hands over MCP and renders
- * the conversation itself. That is what makes it look and behave like part of
- * the application rather than a terminal glued into a tab, and it is why the
- * approval dialogs for destructive tools are native Qt dialogs raised here,
- * showing real node names.
- */
+ * agent CLI or HTTP tool-agent, which in turn drives Natron through AIMcpServer.
+ **/
 class AIChatPanel
     : public QWidget, public PanelWidget
 {
@@ -68,16 +64,9 @@ public:
 
     virtual ~AIChatPanel();
 
-    /// Starts the MCP server and the agent process if they are not up yet.
+    /// Starts the MCP server; starts the agent only when a saved connection exists.
     void ensureStarted();
 
-    /**
-     * @brief Called when this panel becomes the visible tab.
-     *
-     * Starting here rather than on the first message means the MCP endpoint and
-     * token are printed as soon as the panel is opened, so the server can be
-     * driven by hand even when no agent CLI is installed.
-     **/
     virtual void onPanelMadeCurrent() OVERRIDE FINAL;
 
 public Q_SLOTS:
@@ -85,6 +74,12 @@ public Q_SLOTS:
     void onSendClicked();
 
     void onStopClicked();
+
+    void onConnectClicked();
+
+    void onTranscriptAnchorClicked(const QUrl& url);
+
+    void onProviderComboChanged(int index);
 
     void onBackendTextChunk(const QString& text);
 
@@ -100,22 +95,21 @@ public Q_SLOTS:
 
     void onBackendFinished();
 
-    /**
-     * @brief Raises a native confirmation dialog for a destructive tool.
-     *
-     * Connected to AIMcpServer::destructiveToolRequested with a direct
-     * connection, so it runs before the tool executes and can veto it.
-     **/
     void onDestructiveToolRequested(const QString& toolName,
                                     const QString& summary,
                                     bool* allowed);
 
 private:
 
-    /**
-     * @brief Intercepts Enter in the input box: Enter sends, Shift+Enter inserts
-     * a newline. QPlainTextEdit would otherwise swallow both.
-     **/
+    void applyConnection(const AIConnectionConfig& config,
+                         bool startBackend);
+
+    void connectBackendSignals();
+
+    void updateProviderFooter();
+
+    QString projectCwd() const;
+
     virtual bool eventFilter(QObject* watched,
                              QEvent* event) OVERRIDE FINAL;
 
@@ -126,10 +120,6 @@ private:
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual void keyReleaseEvent(QKeyEvent* e) OVERRIDE FINAL;
 
-    /**
-     * @brief Routes the agent's undo commands onto the node graph's stack, so
-     * Ctrl+Z in the panel undoes what the agent did to the graph.
-     **/
     virtual QUndoStack* getUndoStack() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     std::unique_ptr<AIChatPanelPrivate> _imp;

@@ -25,6 +25,9 @@
 
 #include "AIAgentBackend.h"
 
+#include "Gui/AIProviderRegistry.h"
+#include "Gui/HttpToolAgentBackend.h"
+
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QtCore/QByteArray>
@@ -60,6 +63,50 @@ AIAgentBackend::~AIAgentBackend()
 {
 }
 
+AIAgentBackend*
+AIAgentBackend::create(const AIConnectionConfig& config,
+                       QObject* parent)
+{
+    const QString id = config.providerId;
+
+    if ( ( config.method == eAIConnectionMethodCli ) && ( id == QString::fromUtf8("claude") ) ) {
+        ClaudeCodeBackend* backend = new ClaudeCodeBackend(parent);
+        backend->configure(config);
+
+        return backend;
+    }
+    if ( ( config.method == eAIConnectionMethodCli ) && ( id == QString::fromUtf8("codex") ) ) {
+        CodexCliBackend* backend = new CodexCliBackend(parent);
+        backend->configure(config);
+
+        return backend;
+    }
+    if ( ( config.method == eAIConnectionMethodCli ) && ( id == QString::fromUtf8("gemini") ) ) {
+        GeminiCliBackend* backend = new GeminiCliBackend(parent);
+        backend->configure(config);
+
+        return backend;
+    }
+
+    // API key, custom endpoint, Ollama, ChatGPT, or CLI providers falling back to HTTP.
+    if ( ( config.method == eAIConnectionMethodApiKey ) ||
+         ( config.method == eAIConnectionMethodCustom ) ||
+         ( id == QString::fromUtf8("chatgpt") ) ||
+         ( id == QString::fromUtf8("ollama") ) ||
+         ( id == QString::fromUtf8("custom") ) ||
+         ( ( config.method != eAIConnectionMethodCli ) &&
+           ( ( id == QString::fromUtf8("claude") ) ||
+             ( id == QString::fromUtf8("codex") ) ||
+             ( id == QString::fromUtf8("gemini") ) ) ) ) {
+        HttpToolAgentBackend* backend = new HttpToolAgentBackend(parent);
+        backend->configure(config);
+
+        return backend;
+    }
+
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // ClaudeCodeBackend
 // ---------------------------------------------------------------------------
@@ -70,12 +117,14 @@ struct ClaudeCodeBackendPrivate
     QProcess* process;
     QByteArray stdoutBuffer;
     QString currentToolName;
+    AIConnectionConfig config;
 
     ClaudeCodeBackendPrivate(ClaudeCodeBackend* publicInterface)
         : _publicInterface(publicInterface)
         , process(0)
         , stdoutBuffer()
         , currentToolName()
+        , config()
     {
     }
 
@@ -199,49 +248,41 @@ ClaudeCodeBackend::~ClaudeCodeBackend()
     stop();
 }
 
+void
+ClaudeCodeBackend::configure(const AIConnectionConfig& config)
+{
+    _claudeImp->config = config;
+}
+
 QString
 ClaudeCodeBackend::displayName() const
 {
-    return QString::fromUtf8("Claude Code");
+    return QString::fromUtf8("Claude");
+}
+
+QString
+ClaudeCodeBackend::providerId() const
+{
+    return QString::fromUtf8("claude");
+}
+
+QString
+ClaudeCodeBackend::connectionMethodLabel() const
+{
+    return AIConnectionSettings::methodLabel(eAIConnectionMethodCli);
 }
 
 QString
 ClaudeCodeBackend::findExecutable() const
 {
-    // PATH first: that is where a normal install puts it.
-#ifdef __NATRON_WIN32__
-    QString found = QStandardPaths::findExecutable( QString::fromUtf8("claude.exe") );
-    if ( found.isEmpty() ) {
-        found = QStandardPaths::findExecutable( QString::fromUtf8("claude.cmd") );
-    }
-#else
-    QString found = QStandardPaths::findExecutable( QString::fromUtf8("claude") );
-#endif
-
-    if ( !found.isEmpty() ) {
-        return found;
-    }
-
-    // Then the documented per-user install location.
-    QStringList candidates;
-    const QString home = QDir::homePath();
-#ifdef __NATRON_WIN32__
-    candidates << home + QString::fromUtf8("/.local/bin/claude.exe");
-    candidates << home + QString::fromUtf8("/AppData/Roaming/npm/claude.cmd");
-#else
-    candidates << home + QString::fromUtf8("/.local/bin/claude");
-    candidates << QString::fromUtf8("/usr/local/bin/claude");
-    candidates << QString::fromUtf8("/opt/homebrew/bin/claude");
-#endif
-
-    for (int i = 0; i < candidates.size(); ++i) {
-        QFileInfo info( candidates.at(i) );
+    if ( !_claudeImp->config.cliPath.isEmpty() ) {
+        QFileInfo info(_claudeImp->config.cliPath);
         if ( info.exists() && info.isExecutable() ) {
             return info.absoluteFilePath();
         }
     }
 
-    return QString();
+    return AIProviderRegistry::findCliExecutable( QString::fromUtf8("claude") );
 }
 
 bool
@@ -255,7 +296,7 @@ ClaudeCodeBackend::start(const QString& cwd,
 
     const QString exe = findExecutable();
     if ( exe.isEmpty() ) {
-        Q_EMIT errorOccurred( tr("The 'claude' command was not found. Install Claude Code and make sure it is on your PATH.") );
+        Q_EMIT errorOccurred( tr("Claude CLI not found. Install Claude Code, or click Connect… and use an API key.") );
 
         return false;
     }
@@ -292,12 +333,32 @@ ClaudeCodeBackend::start(const QString& cwd,
     // MCP servers the user has configured globally, which may reach files,
     // network or a shell well outside this session.
     args << QString::fromUtf8("--strict-mcp-config");
-    // Read-only tools are pre-approved; everything destructive is gated by
-    // AIMcpServer itself, which raises a native dialog. The CLI has no
-    // permission-callback mechanism, so approval has to live on our side.
-    args << QString::fromUtf8("--permission-mode") << QString::fromUtf8("manual");
-    args << QString::fromUtf8("--allowedTools")
-         << QString::fromUtf8("mcp__natron__natron_status mcp__natron__graph_list_nodes mcp__natron__param_get");
+    // The CLI must not be the gatekeeper here.
+    //
+    // It has no permission-callback mechanism (no --permission-prompt-tool in
+    // 2.x), and in non-interactive -p mode there is no UI to approve anything,
+    // so any tool left outside the allowlist is blocked *permanently* -- the
+    // request never reaches Natron and our own confirmation dialog never gets
+    // asked. Gating therefore lives entirely on the Natron side, in
+    // AIMcpServer, where the dialog can show real node names.
+    //
+    // --strict-mcp-config above is what keeps this bounded: the agent sees our
+    // server and nothing else the user may have configured globally.
+    args << QString::fromUtf8("--permission-mode") << QString::fromUtf8("bypassPermissions");
+
+    // Pin the model explicitly. Without --model, Claude Code falls back to the
+    // account / settings default (or the "best" alias), which can resolve to
+    // Fable -- expensive and not what we want for Natron comps. Sonnet is the
+    // capable + cheap default; the Connect dialog can override via config.model.
+    {
+        QString model = _claudeImp->config.model.trimmed();
+        if ( model.isEmpty() ||
+             ( model == QString::fromUtf8("best") ) ||
+             model.contains( QString::fromUtf8("fable"), Qt::CaseInsensitive ) ) {
+            model = QString::fromUtf8("sonnet");
+        }
+        args << QString::fromUtf8("--model") << model;
+    }
 
     _claudeImp->process = new QProcess(this);
     _claudeImp->process->setProgram(exe);
@@ -307,8 +368,12 @@ ClaudeCodeBackend::start(const QString& cwd,
     }
 
     // Inherit the user's environment so the CLI finds its own OAuth credentials.
-    // Natron adds nothing and reads nothing from it.
+    // When the user pasted an API key for the CLI method, inject it for this
+    // child only -- never log the value.
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    if ( !_claudeImp->config.apiKey.isEmpty() ) {
+        env.insert( QString::fromUtf8("ANTHROPIC_API_KEY"), _claudeImp->config.apiKey );
+    }
     _claudeImp->process->setProcessEnvironment(env);
 
     connect( _claudeImp->process, SIGNAL( readyReadStandardOutput() ),

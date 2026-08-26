@@ -152,6 +152,8 @@ struct AIMcpServerPrivate
     QJsonObject toolNodeRename(const QJsonObject& a);
     QJsonObject toolPluginSearch(const QJsonObject& a);
     QJsonObject toolScriptExec(const QJsonObject& a);
+    QJsonObject toolRenderStart(const QJsonObject& a);
+    QJsonObject toolRenderStatus(const QJsonObject& a);
 
     // --- helpers -----------------------------------------------------------
     AppInstancePtr app() const;
@@ -203,7 +205,8 @@ AIMcpServerPrivate::toolMutates(const QString& toolName)
            ( toolName == QString::fromUtf8("param_set_expression") ) ||
            ( toolName == QString::fromUtf8("param_set_keyframe") ) ||
            ( toolName == QString::fromUtf8("param_clear_animation") ) ||
-           ( toolName == QString::fromUtf8("script_exec") );
+           ( toolName == QString::fromUtf8("script_exec") ) ||
+           ( toolName == QString::fromUtf8("render_start") );
 }
 
 AppInstancePtr
@@ -920,6 +923,92 @@ AIMcpServerPrivate::toolScriptExec(const QJsonObject& a)
     return o;
 }
 
+QJsonObject
+AIMcpServerPrivate::toolRenderStart(const QJsonObject& a)
+{
+    AppInstancePtr instance = app();
+
+    if (!instance) {
+        throw ToolError( QString::fromUtf8("NO_PROJECT"),
+                         QString::fromUtf8("No project is open") );
+    }
+
+    const QString writerName = a[QString::fromUtf8("writeNode")].toString();
+    NodePtr writer = requireNode(writerName);
+
+    if ( !writer->isOutputNode() ) {
+        throw ToolError( QString::fromUtf8("NOT_A_WRITER"),
+                         QString::fromUtf8("'%1' is not a Write node").arg(writerName),
+                         QString::fromUtf8("Call graph_list_nodes and pick a node whose pluginID is a Write.") );
+    }
+
+    const int first = (int)a[QString::fromUtf8("first")].toDouble();
+    const int last  = (int)a[QString::fromUtf8("last")].toDouble();
+
+    if (last < first) {
+        throw ToolError( QString::fromUtf8("RENDER_RANGE_INVALID"),
+                         QString::fromUtf8("last (%1) is before first (%2)").arg(last).arg(first) );
+    }
+
+    std::list<std::string> writers;
+    writers.push_back( writerName.toStdString() );
+
+    std::list<std::pair<int, std::pair<int, int> > > ranges;
+    ranges.push_back( std::make_pair( 1, std::make_pair(first, last) ) );
+
+    // doBlockingRender = false. This is the whole point of the tool: in GUI mode
+    // the render is queued onto Natron's scheduler threads and this returns at
+    // once, so the GUI thread -- which this handler occupies -- is released
+    // immediately.
+    //
+    // Rendering from inside script_exec instead is what freezes Natron: that
+    // handler holds the GUI thread, so a script that waits for the render
+    // deadlocks (the scheduler needs the main thread to make progress), the MCP
+    // client eventually times out, and Natron's own watchdog puts up "A Render
+    // is not responding anymore" (Engine/AbortableRenderInfo.cpp:272).
+    instance->startWritersRenderingFromNames(false, false, writers, ranges);
+
+    QJsonObject o;
+    o[QString::fromUtf8("started")] = true;
+    o[QString::fromUtf8("writeNode")] = writerName;
+    o[QString::fromUtf8("first")] = first;
+    o[QString::fromUtf8("last")] = last;
+    o[QString::fromUtf8("note")] =
+        QString::fromUtf8("Queued. This returned immediately; poll render_status to follow it.");
+
+    return o;
+}
+
+QJsonObject
+AIMcpServerPrivate::toolRenderStatus(const QJsonObject& a)
+{
+    QJsonObject o;
+
+    if ( a.contains( QString::fromUtf8("writeNode") ) ) {
+        NodePtr writer = requireNode( a[QString::fromUtf8("writeNode")].toString() );
+        o[QString::fromUtf8("writeNode")] = a[QString::fromUtf8("writeNode")];
+        o[QString::fromUtf8("rendering")] = writer->isNodeRendering();
+
+        return o;
+    }
+
+    // No node given: report anything in the project that is currently rendering.
+    ProjectPtr proj = project();
+    QJsonArray busy;
+    if (proj) {
+        NodesList nodes = proj->getNodes();
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            if ( (*it) && (*it)->isNodeRendering() ) {
+                busy.push_back( QString::fromUtf8( (*it)->getScriptName_mt_safe().c_str() ) );
+            }
+        }
+    }
+    o[QString::fromUtf8("renderingNodes")] = busy;
+    o[QString::fromUtf8("rendering")] = ( busy.size() > 0 );
+
+    return o;
+}
+
 // ---------------------------------------------------------------------------
 // Tool catalogue
 // ---------------------------------------------------------------------------
@@ -1149,8 +1238,34 @@ AIMcpServerPrivate::toolsList() const
         QJsonArray req;
         req.push_back( QString::fromUtf8("code") );
         tools.push_back( makeTool( QString::fromUtf8("script_exec"),
-                                   QString::fromUtf8("Run Python inside Natron. Use this for anything the other tools do not cover: roto, tracking, rendering, batch edits, or any parameter API. Same interpreter as the Script Editor."),
+                                   QString::fromUtf8("Run Python inside Natron for anything the other tools do not cover: roto, tracking, batch edits, any parameter API. Same interpreter as the Script Editor. "
+                                                     "IMPORTANT: this runs on Natron's GUI thread and blocks it until it returns, so the code must finish quickly. "
+                                                     "Never render or wait/sleep/poll in here -- that freezes Natron and the render can never finish. Use render_start instead."),
                                    props, req, false, true ) );
+    }
+
+    {
+        QJsonObject props;
+        props[QString::fromUtf8("writeNode")] = makeProperty( QString::fromUtf8("string"),
+                                                              QString::fromUtf8("Script name of the Write node.") );
+        props[QString::fromUtf8("first")] = makeProperty( QString::fromUtf8("integer"), QString::fromUtf8("First frame.") );
+        props[QString::fromUtf8("last")] = makeProperty( QString::fromUtf8("integer"), QString::fromUtf8("Last frame.") );
+        QJsonArray req;
+        req.push_back( QString::fromUtf8("writeNode") );
+        req.push_back( QString::fromUtf8("first") );
+        req.push_back( QString::fromUtf8("last") );
+        tools.push_back( makeTool( QString::fromUtf8("render_start"),
+                                   QString::fromUtf8("Start a render and return immediately. This is the only correct way to render: it queues the work on Natron's scheduler instead of blocking. Poll render_status to follow progress."),
+                                   props, req, false, false ) );
+    }
+
+    {
+        QJsonObject props;
+        props[QString::fromUtf8("writeNode")] = makeProperty( QString::fromUtf8("string"),
+                                                              QString::fromUtf8("Optional: check just this node. Omit to list everything currently rendering.") );
+        tools.push_back( makeTool( QString::fromUtf8("render_status"),
+                                   QString::fromUtf8("Report whether a render is still running."),
+                                   props, QJsonArray(), true, false ) );
     }
 
     QJsonObject result;
@@ -1208,6 +1323,12 @@ AIMcpServerPrivate::handleToolCall(const QString& toolName,
     }
     if ( toolName == QString::fromUtf8("script_exec") ) {
         return toolScriptExec(args);
+    }
+    if ( toolName == QString::fromUtf8("render_start") ) {
+        return toolRenderStart(args);
+    }
+    if ( toolName == QString::fromUtf8("render_status") ) {
+        return toolRenderStatus(args);
     }
 
     throw ToolError( QString::fromUtf8("UNKNOWN_TOOL"),

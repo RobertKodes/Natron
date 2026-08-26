@@ -38,21 +38,23 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Gui/AIConnectionSettings.h"
 #include "Gui/GuiFwd.h"
 
 NATRON_NAMESPACE_ENTER
 
 struct AIAgentBackendPrivate;
 struct ClaudeCodeBackendPrivate;
+struct CodexCliBackendPrivate;
+struct GeminiCliBackendPrivate;
 
 /**
- * @brief Drives an external agent CLI as a child process and normalizes its
+ * @brief Drives an external agent CLI or an HTTP tool-agent and normalizes its
  * output into Natron-level events.
  *
- * Authentication deliberately stays with the CLI. Natron never reads, stores,
- * logs or serializes a provider credential: the CLI authenticates with the
- * user's own subscription through its own OAuth store, and we merely start it.
- * If the CLI works in a terminal, it works here.
+ * For CLI backends, authentication preferably stays with the CLI. API keys may
+ * be injected into the child environment when the user chooses that method;
+ * Natron never logs or serializes those keys into the project.
  */
 class AIAgentBackend
     : public QObject
@@ -70,14 +72,18 @@ public:
     /// Human-readable backend name, shown in the panel ("Claude Code", ...).
     virtual QString displayName() const = 0;
 
+    virtual QString providerId() const = 0;
+
+    virtual QString connectionMethodLabel() const = 0;
+
     /**
-     * @brief Locates the CLI binary. Empty when it is not installed, which the
-     * panel turns into onboarding instructions rather than an error.
+     * @brief Locates the CLI binary. Empty when it is not installed or when the
+     * backend does not use a CLI (HTTP agent).
      **/
     virtual QString findExecutable() const = 0;
 
     /**
-     * @brief Starts the child process.
+     * @brief Starts the child process or marks the HTTP agent ready.
      * @param cwd Working directory -- the project folder, so the agent's own
      * file tools see the artist's comp.
      * @param mcpUrl Loopback URL of Natron's AIMcpServer.
@@ -98,6 +104,13 @@ public:
 
     virtual bool isRunning() const = 0;
 
+    /**
+     * @brief Builds the backend matching @p config (CLI or HTTP).
+     * Ownership is transferred to @p parent.
+     **/
+    static AIAgentBackend* create(const AIConnectionConfig& config,
+                                  QObject* parent);
+
 Q_SIGNALS:
 
     /// A fragment of assistant text. Chunks arrive progressively.
@@ -115,7 +128,7 @@ Q_SIGNALS:
 
     void errorOccurred(const QString& message);
 
-    /// The child process exited.
+    /// The child process exited / HTTP agent stopped.
     void finished();
 
 protected:
@@ -125,11 +138,7 @@ protected:
 
 /**
  * @brief AIAgentBackend for the "claude" CLI (Claude Code).
- *
- * Runs it non-interactively with bidirectional stream-json, which is the mode
- * that lets Natron render the conversation with its own Qt widgets instead of
- * embedding a terminal emulator.
- */
+ **/
 class ClaudeCodeBackend
     : public AIAgentBackend
 {
@@ -143,7 +152,11 @@ public:
 
     virtual ~ClaudeCodeBackend();
 
+    void configure(const AIConnectionConfig& config);
+
     virtual QString displayName() const OVERRIDE FINAL;
+    virtual QString providerId() const OVERRIDE FINAL;
+    virtual QString connectionMethodLabel() const OVERRIDE FINAL;
     virtual QString findExecutable() const OVERRIDE FINAL;
     virtual bool start(const QString& cwd,
                        const QString& mcpUrl,
@@ -166,6 +179,96 @@ private Q_SLOTS:
 private:
 
     std::unique_ptr<ClaudeCodeBackendPrivate> _claudeImp;
+};
+
+/**
+ * @brief AIAgentBackend for the "codex" CLI (`codex exec --json`).
+ **/
+class CodexCliBackend
+    : public AIAgentBackend
+{
+GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    Q_OBJECT
+GCC_DIAG_SUGGEST_OVERRIDE_ON
+
+public:
+
+    explicit CodexCliBackend(QObject* parent = 0);
+
+    virtual ~CodexCliBackend();
+
+    void configure(const AIConnectionConfig& config);
+
+    virtual QString displayName() const OVERRIDE FINAL;
+    virtual QString providerId() const OVERRIDE FINAL;
+    virtual QString connectionMethodLabel() const OVERRIDE FINAL;
+    virtual QString findExecutable() const OVERRIDE FINAL;
+    virtual bool start(const QString& cwd,
+                       const QString& mcpUrl,
+                       const QString& token) OVERRIDE FINAL;
+    virtual void send(const QString& text) OVERRIDE FINAL;
+    virtual void interrupt() OVERRIDE FINAL;
+    virtual void stop() OVERRIDE FINAL;
+    virtual bool isRunning() const OVERRIDE FINAL;
+
+private Q_SLOTS:
+
+    void onReadyReadStandardOutput();
+
+    void onReadyReadStandardError();
+
+    void onProcessFinished(int exitCode);
+
+    void onProcessError();
+
+private:
+
+    std::unique_ptr<CodexCliBackendPrivate> _codexImp;
+};
+
+/**
+ * @brief AIAgentBackend for the "gemini" CLI.
+ **/
+class GeminiCliBackend
+    : public AIAgentBackend
+{
+GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    Q_OBJECT
+GCC_DIAG_SUGGEST_OVERRIDE_ON
+
+public:
+
+    explicit GeminiCliBackend(QObject* parent = 0);
+
+    virtual ~GeminiCliBackend();
+
+    void configure(const AIConnectionConfig& config);
+
+    virtual QString displayName() const OVERRIDE FINAL;
+    virtual QString providerId() const OVERRIDE FINAL;
+    virtual QString connectionMethodLabel() const OVERRIDE FINAL;
+    virtual QString findExecutable() const OVERRIDE FINAL;
+    virtual bool start(const QString& cwd,
+                       const QString& mcpUrl,
+                       const QString& token) OVERRIDE FINAL;
+    virtual void send(const QString& text) OVERRIDE FINAL;
+    virtual void interrupt() OVERRIDE FINAL;
+    virtual void stop() OVERRIDE FINAL;
+    virtual bool isRunning() const OVERRIDE FINAL;
+
+private Q_SLOTS:
+
+    void onReadyReadStandardOutput();
+
+    void onReadyReadStandardError();
+
+    void onProcessFinished(int exitCode);
+
+    void onProcessError();
+
+private:
+
+    std::unique_ptr<GeminiCliBackendPrivate> _geminiImp;
 };
 
 NATRON_NAMESPACE_EXIT

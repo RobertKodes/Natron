@@ -29,13 +29,16 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
+#include <QComboBox>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QCheckBox>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QTextBrowser>
+#include <QUrl>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
@@ -48,6 +51,8 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/AIAgentBackend.h"
 #include "Gui/AIMcpServer.h"
+#include "Gui/AIProviderConnectDialog.h"
+#include "Gui/AIProviderRegistry.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/NodeGraph.h"
@@ -66,15 +71,20 @@ struct AIChatPanelPrivate
     QPlainTextEdit* input;
     QPushButton* sendButton;
     QPushButton* stopButton;
+    QComboBox* providerCombo;
+    QPushButton* connectButton;
     QLabel* providerLabel;
+    QCheckBox* autoApprove;
 
     AIMcpServer* server;
     AIAgentBackend* backend;
+    AIConnectionConfig connection;
+    bool agentConnected;
 
-    /// True between the first token of a turn and its "result" event.
     bool turnInProgress;
-    /// Whether the assistant bubble for this turn has been opened.
     bool assistantBubbleOpen;
+    bool ignoreProviderChange;
+    bool welcomeShown;
 
     AIChatPanelPrivate(AIChatPanel* publicInterface,
                        Gui* g)
@@ -86,11 +96,18 @@ struct AIChatPanelPrivate
         , input(0)
         , sendButton(0)
         , stopButton(0)
+        , providerCombo(0)
+        , connectButton(0)
         , providerLabel(0)
+        , autoApprove(0)
         , server(0)
         , backend(0)
+        , connection()
+        , agentConnected(false)
         , turnInProgress(false)
         , assistantBubbleOpen(false)
+        , ignoreProviderChange(false)
+        , welcomeShown(false)
     {
     }
 
@@ -99,7 +116,6 @@ struct AIChatPanelPrivate
     void openAssistantBubble();
     void setStatus(const QString& text);
 
-    /// Node names, viewer and frame the user can currently see.
     QString visibleContext() const;
 
     static QString escape(const QString& text);
@@ -161,9 +177,6 @@ AIChatPanelPrivate::setStatus(const QString& text)
 QString
 AIChatPanelPrivate::visibleContext() const
 {
-    // This is the advantage a terminal CLI does not have: the panel knows what
-    // the artist is looking at, so "warmer here" can resolve without naming
-    // anything.
     if (!gui) {
         return QString();
     }
@@ -215,9 +228,24 @@ AIChatPanel::AIChatPanel(Gui* gui)
     _imp->statusLabel->setText( tr("Not started") );
     _imp->mainLayout->addWidget(_imp->statusLabel);
 
+    QHBoxLayout* providerRow = new QHBoxLayout();
+    providerRow->addWidget( new QLabel(tr("Provider:"), this) );
+    _imp->providerCombo = new QComboBox(this);
+    const std::vector<AIProviderInfo>& providers = AIProviderRegistry::all();
+    for (std::size_t i = 0; i < providers.size(); ++i) {
+        _imp->providerCombo->addItem(providers[i].displayName, providers[i].id);
+    }
+    providerRow->addWidget(_imp->providerCombo, 1);
+    _imp->connectButton = new QPushButton(tr("Connect..."), this);
+    providerRow->addWidget(_imp->connectButton);
+    _imp->mainLayout->addLayout(providerRow);
+
     _imp->transcript = new QTextBrowser(this);
     _imp->transcript->setOpenExternalLinks(true);
     _imp->transcript->setReadOnly(true);
+    _imp->transcript->setOpenLinks(false);
+    QObject::connect( _imp->transcript, SIGNAL( anchorClicked(QUrl) ),
+                      this, SLOT( onTranscriptAnchorClicked(QUrl) ) );
     _imp->mainLayout->addWidget(_imp->transcript, 1);
 
     _imp->input = new QPlainTextEdit(this);
@@ -230,6 +258,12 @@ AIChatPanel::AIChatPanel(Gui* gui)
     _imp->providerLabel = new QLabel(this);
     buttons->addWidget(_imp->providerLabel, 1);
 
+    _imp->autoApprove = new QCheckBox(tr("Allow everything without asking"), this);
+    _imp->autoApprove->setToolTip( tr("When checked, destructive operations such as deleting a node run "
+                                      "immediately instead of raising a confirmation dialog.") );
+    _imp->autoApprove->setChecked(true);
+    buttons->addWidget(_imp->autoApprove);
+
     _imp->stopButton = new QPushButton(tr("Stop"), this);
     _imp->stopButton->setEnabled(false);
     buttons->addWidget(_imp->stopButton);
@@ -241,26 +275,19 @@ AIChatPanel::AIChatPanel(Gui* gui)
 
     QObject::connect( _imp->sendButton, SIGNAL( clicked() ), this, SLOT( onSendClicked() ) );
     QObject::connect( _imp->stopButton, SIGNAL( clicked() ), this, SLOT( onStopClicked() ) );
+    QObject::connect( _imp->connectButton, SIGNAL( clicked() ), this, SLOT( onConnectClicked() ) );
+    QObject::connect( _imp->providerCombo, SIGNAL( currentIndexChanged(int) ),
+                      this, SLOT( onProviderComboChanged(int) ) );
 
-    _imp->backend = new ClaudeCodeBackend(this);
+    _imp->connection = AIConnectionSettings::load();
+    _imp->ignoreProviderChange = true;
+    const int idx = _imp->providerCombo->findData(_imp->connection.providerId);
+    if (idx >= 0) {
+        _imp->providerCombo->setCurrentIndex(idx);
+    }
+    _imp->ignoreProviderChange = false;
 
-    // Say plainly where the conversation goes. The user is spending their own
-    // subscription, and the project content leaves the machine.
-    _imp->providerLabel->setText( tr("powered by %1 - your account; the conversation and project content are sent to the provider")
-                                  .arg( _imp->backend->displayName() ) );
-
-    QObject::connect( _imp->backend, SIGNAL( textChunk(QString) ),
-                      this, SLOT( onBackendTextChunk(QString) ) );
-    QObject::connect( _imp->backend, SIGNAL( toolCall(QString, QString) ),
-                      this, SLOT( onBackendToolCall(QString, QString) ) );
-    QObject::connect( _imp->backend, SIGNAL( toolResult(QString, bool) ),
-                      this, SLOT( onBackendToolResult(QString, bool) ) );
-    QObject::connect( _imp->backend, SIGNAL( turnFinished() ),
-                      this, SLOT( onBackendTurnFinished() ) );
-    QObject::connect( _imp->backend, SIGNAL( errorOccurred(QString) ),
-                      this, SLOT( onBackendError(QString) ) );
-    QObject::connect( _imp->backend, SIGNAL( finished() ),
-                      this, SLOT( onBackendFinished() ) );
+    updateProviderFooter();
 }
 
 AIChatPanel::~AIChatPanel()
@@ -276,9 +303,6 @@ AIChatPanel::~AIChatPanel()
 QUndoStack*
 AIChatPanel::getUndoStack() const
 {
-    // The agent mutates the node graph, so its undo belongs on the graph's stack
-    // rather than on a stack private to this panel. Ctrl+Z with the panel
-    // focused then undoes the agent's last turn.
     if (!_imp->gui) {
         return 0;
     }
@@ -288,49 +312,9 @@ AIChatPanel::getUndoStack() const
     return graph ? graph->getUndoStack() : 0;
 }
 
-void
-AIChatPanel::ensureStarted()
+QString
+AIChatPanel::projectCwd() const
 {
-    if (!_imp->server) {
-        _imp->server = new AIMcpServer(_imp->gui, this);
-
-        // Direct connection: the veto has to be decided before the tool runs,
-        // on the same call stack.
-        QObject::connect( _imp->server, SIGNAL( destructiveToolRequested(QString, QString, bool*) ),
-                          this, SLOT( onDestructiveToolRequested(QString, QString, bool*) ),
-                          Qt::DirectConnection );
-
-        if ( !_imp->server->start() ) {
-            _imp->setStatus( tr("Could not open the local MCP port.") );
-
-            return;
-        }
-
-        // Print the endpoint and token into the transcript so the server can be
-        // driven by hand (tools/ai-mcp-smoketest.py) without an agent. Loopback
-        // only, and the token dies with the panel.
-        _imp->appendHtml( QString::fromUtf8("<p style=\"color:#888;\"><i>%1</i><br/>"
-                                            "MCP: <code>%2</code><br/>"
-                                            "Token: <code>%3</code></p>")
-                          .arg( tr("Local MCP server started (loopback only).") )
-                          .arg( _imp->server->url() )
-                          .arg( _imp->server->token() ) );
-    }
-
-    if ( _imp->backend->isRunning() ) {
-        return;
-    }
-
-    const QString exe = _imp->backend->findExecutable();
-    if ( exe.isEmpty() ) {
-        _imp->setStatus( tr("'claude' was not found. Install Claude Code, then reopen this panel.") );
-        _imp->appendHtml( QString::fromUtf8("<p><i>%1</i></p>")
-                          .arg( tr("Claude Code is not installed or not on your PATH. Install it, run 'claude' once in a terminal to sign in with your subscription, then reopen this panel.") ) );
-
-        return;
-    }
-
-    // Run the agent in the project's folder so its own file tools see the comp.
     QString cwd;
     GuiAppInstancePtr app = _imp->gui ? _imp->gui->getApp() : GuiAppInstancePtr();
     if (app) {
@@ -346,8 +330,170 @@ AIChatPanel::ensureStarted()
         cwd = QDir::homePath();
     }
 
-    if ( _imp->backend->start( cwd, _imp->server->url(), _imp->server->token() ) ) {
-        _imp->setStatus( tr("%1 - connected").arg( _imp->backend->displayName() ) );
+    return cwd;
+}
+
+void
+AIChatPanel::connectBackendSignals()
+{
+    if (!_imp->backend) {
+        return;
+    }
+
+    QObject::connect( _imp->backend, SIGNAL( textChunk(QString) ),
+                      this, SLOT( onBackendTextChunk(QString) ) );
+    QObject::connect( _imp->backend, SIGNAL( toolCall(QString, QString) ),
+                      this, SLOT( onBackendToolCall(QString, QString) ) );
+    QObject::connect( _imp->backend, SIGNAL( toolResult(QString, bool) ),
+                      this, SLOT( onBackendToolResult(QString, bool) ) );
+    QObject::connect( _imp->backend, SIGNAL( turnFinished() ),
+                      this, SLOT( onBackendTurnFinished() ) );
+    QObject::connect( _imp->backend, SIGNAL( errorOccurred(QString) ),
+                      this, SLOT( onBackendError(QString) ) );
+    QObject::connect( _imp->backend, SIGNAL( finished() ),
+                      this, SLOT( onBackendFinished() ) );
+}
+
+void
+AIChatPanel::updateProviderFooter()
+{
+    const AIProviderInfo* info = AIProviderRegistry::findById(_imp->connection.providerId);
+    const QString name = info ? info->displayName : tr("Provider");
+    if (_imp->agentConnected && _imp->backend) {
+        _imp->providerLabel->setText(
+            tr("powered by %1 (%2) - your account; conversation and project content are sent to the provider")
+            .arg( _imp->backend->displayName() )
+            .arg( _imp->backend->connectionMethodLabel() ) );
+        _imp->setStatus( tr("%1 · %2 connected")
+                         .arg( _imp->backend->displayName() )
+                         .arg( _imp->backend->connectionMethodLabel() ) );
+    } else {
+        _imp->providerLabel->setText(
+            tr("%1 - not connected. Click Connect… to use CLI, an API key, or a custom endpoint.")
+            .arg(name) );
+        _imp->setStatus( tr("%1 · not connected").arg(name) );
+    }
+}
+
+void
+AIChatPanel::applyConnection(const AIConnectionConfig& config,
+                             bool startBackend)
+{
+    if (_imp->backend) {
+        _imp->backend->disconnect(this);
+        _imp->backend->stop();
+        _imp->backend->deleteLater();
+        _imp->backend = 0;
+    }
+
+    _imp->connection = config;
+    _imp->agentConnected = false;
+    AIConnectionSettings::save(_imp->connection);
+
+    _imp->ignoreProviderChange = true;
+    const int idx = _imp->providerCombo->findData(config.providerId);
+    if (idx >= 0) {
+        _imp->providerCombo->setCurrentIndex(idx);
+    }
+    _imp->ignoreProviderChange = false;
+
+    if (!startBackend || ( config.method == eAIConnectionMethodNone )) {
+        updateProviderFooter();
+
+        return;
+    }
+
+    // Ensure MCP is up without going through ensureStarted() (avoids recursion
+    // when ensureStarted auto-connects via this method).
+    if (!_imp->server) {
+        _imp->server = new AIMcpServer(_imp->gui, this);
+        QObject::connect( _imp->server, SIGNAL( destructiveToolRequested(QString, QString, bool*) ),
+                          this, SLOT( onDestructiveToolRequested(QString, QString, bool*) ),
+                          Qt::DirectConnection );
+        if ( !_imp->server->start() ) {
+            _imp->setStatus( tr("Could not open the local MCP port.") );
+            updateProviderFooter();
+
+            return;
+        }
+        _imp->appendHtml( QString::fromUtf8("<p style=\"color:#888;\"><i>%1</i><br/>"
+                                            "MCP: <code>%2</code><br/>"
+                                            "Token: <code>%3</code></p>")
+                          .arg( tr("Local MCP server started (loopback only).") )
+                          .arg( _imp->server->url() )
+                          .arg( _imp->server->token() ) );
+    }
+
+    _imp->backend = AIAgentBackend::create(config, this);
+    if (!_imp->backend) {
+        _imp->appendHtml( QString::fromUtf8("<p style=\"color:#c44;\">%1</p>")
+                          .arg( tr("Could not create a backend for this provider/method.") ) );
+        updateProviderFooter();
+
+        return;
+    }
+
+    connectBackendSignals();
+
+    if ( _imp->backend->start( projectCwd(), _imp->server->url(), _imp->server->token() ) ) {
+        _imp->agentConnected = true;
+        _imp->appendHtml( QString::fromUtf8("<p style=\"color:#888;\"><i>%1</i></p>")
+                          .arg( tr("Connected to %1 via %2.")
+                                .arg( _imp->backend->displayName() )
+                                .arg( _imp->backend->connectionMethodLabel() ) ) );
+    } else {
+        _imp->agentConnected = false;
+        _imp->appendHtml( QString::fromUtf8("<p style=\"color:#c44;\">%1 "
+                                            "<a href=\"#connect\">%2</a></p>")
+                          .arg( tr("Could not connect.") )
+                          .arg( tr("Open Connect…") ) );
+        if (_imp->connectButton) {
+            _imp->connectButton->setFocus(Qt::OtherFocusReason);
+        }
+    }
+
+    updateProviderFooter();
+}
+
+void
+AIChatPanel::ensureStarted()
+{
+    if (!_imp->server) {
+        _imp->server = new AIMcpServer(_imp->gui, this);
+
+        QObject::connect( _imp->server, SIGNAL( destructiveToolRequested(QString, QString, bool*) ),
+                          this, SLOT( onDestructiveToolRequested(QString, QString, bool*) ),
+                          Qt::DirectConnection );
+
+        if ( !_imp->server->start() ) {
+            _imp->setStatus( tr("Could not open the local MCP port.") );
+
+            return;
+        }
+
+        _imp->appendHtml( QString::fromUtf8("<p style=\"color:#888;\"><i>%1</i><br/>"
+                                            "MCP: <code>%2</code><br/>"
+                                            "Token: <code>%3</code></p>")
+                          .arg( tr("Local MCP server started (loopback only).") )
+                          .arg( _imp->server->url() )
+                          .arg( _imp->server->token() ) );
+    }
+
+    if (_imp->agentConnected && _imp->backend && _imp->backend->isRunning()) {
+        return;
+    }
+
+    if ( _imp->connection.autoConnect &&
+         ( _imp->connection.method != eAIConnectionMethodNone ) &&
+         !_imp->agentConnected ) {
+        applyConnection(_imp->connection, true);
+    } else {
+        updateProviderFooter();
+        if (!_imp->agentConnected && !_imp->welcomeShown) {
+            _imp->welcomeShown = true;
+            _imp->appendHtml( QString::fromUtf8("<p><i>%1</i></p>")
+                              .arg( tr("Choose a provider and click Connect… (CLI login, API key, or custom endpoint).") ) );
+        }
     }
 }
 
@@ -355,6 +501,61 @@ void
 AIChatPanel::onPanelMadeCurrent()
 {
     ensureStarted();
+}
+
+void
+AIChatPanel::onConnectClicked()
+{
+    ensureStarted();
+
+    const QString providerId = _imp->providerCombo->currentData().toString();
+    AIProviderConnectDialog dialog(providerId, this);
+    if ( dialog.exec() != QDialog::Accepted ) {
+        return;
+    }
+
+    applyConnection(dialog.resultConfig(), true);
+}
+
+void
+AIChatPanel::onTranscriptAnchorClicked(const QUrl& url)
+{
+    if ( url.toString() == QString::fromUtf8("#connect") ) {
+        onConnectClicked();
+    }
+}
+
+void
+AIChatPanel::onProviderComboChanged(int index)
+{
+    Q_UNUSED(index);
+
+    if (_imp->ignoreProviderChange) {
+        return;
+    }
+
+    const QString providerId = _imp->providerCombo->currentData().toString();
+    if (providerId == _imp->connection.providerId) {
+        return;
+    }
+
+    // Switching providers disconnects until the user clicks Connect again.
+    if (_imp->backend) {
+        _imp->backend->disconnect(this);
+        _imp->backend->stop();
+        _imp->backend->deleteLater();
+        _imp->backend = 0;
+    }
+
+    _imp->agentConnected = false;
+    _imp->connection = AIConnectionSettings::loadForProvider(providerId);
+    _imp->connection.providerId = providerId;
+    // Do not auto-start on combo change.
+    _imp->connection.autoConnect = false;
+    AIConnectionSettings::save(_imp->connection);
+    updateProviderFooter();
+    _imp->appendHtml( QString::fromUtf8("<p style=\"color:#888;\"><i>%1</i></p>")
+                      .arg( tr("Provider changed. Click Connect… to authenticate.") ) );
 }
 
 void
@@ -368,16 +569,16 @@ AIChatPanel::onSendClicked()
 
     ensureStarted();
 
-    if ( !_imp->backend->isRunning() ) {
+    if ( !_imp->backend || !_imp->backend->isRunning() ) {
+        _imp->appendHtml( QString::fromUtf8("<p style=\"color:#c44;\">%1</p>")
+                          .arg( tr("Not connected. Click Connect… to choose CLI or an API key.") ) );
+
         return;
     }
 
     _imp->appendUserBubble(text);
     _imp->input->clear();
 
-    // Open one undo transaction for the whole turn: every graph mutation the
-    // agent makes before it finishes collapses into a single Ctrl+Z. The
-    // per-tool guards inside AIMcpServer nest harmlessly under this one.
     if (_imp->server) {
         _imp->server->beginAgentTransaction( tr("assistant turn") );
     }
@@ -412,7 +613,6 @@ AIChatPanel::onBackendToolCall(const QString& name,
 {
     Q_UNUSED(argsJson);
 
-    // Compact one-line activity row rather than a wall of JSON.
     QString shortName = name;
     if ( shortName.startsWith( QString::fromUtf8("mcp__natron__") ) ) {
         shortName = shortName.mid( QString::fromUtf8("mcp__natron__").size() );
@@ -450,8 +650,6 @@ AIChatPanel::onBackendTurnFinished()
     _imp->turnInProgress = false;
     _imp->assistantBubbleOpen = false;
 
-    // Close the turn's undo macro. This must happen on every exit path,
-    // including errors, or the stack stays wedged open.
     if (_imp->server) {
         _imp->server->endAgentTransaction();
     }
@@ -464,16 +662,26 @@ void
 AIChatPanel::onBackendError(const QString& message)
 {
     _imp->assistantBubbleOpen = false;
-    _imp->appendHtml( QString::fromUtf8("<p style=\"color:#c44;\"><b>%1</b> %2</p>")
+    _imp->agentConnected = _imp->backend && _imp->backend->isRunning();
+    updateProviderFooter();
+    _imp->appendHtml( QString::fromUtf8("<p style=\"color:#c44;\"><b>%1</b> %2</p>"
+                                        "<p><a href=\"#connect\">%3</a></p>")
                       .arg( tr("Error:") )
-                      .arg( AIChatPanelPrivate::escape(message) ) );
+                      .arg( AIChatPanelPrivate::escape(message) )
+                      .arg( tr("Open Connect…") ) );
+    if (_imp->connectButton) {
+        _imp->connectButton->setFocus(Qt::OtherFocusReason);
+    }
 }
 
 void
 AIChatPanel::onBackendFinished()
 {
     onBackendTurnFinished();
-    _imp->setStatus( tr("Agent stopped") );
+    _imp->agentConnected = false;
+    updateProviderFooter();
+    _imp->appendHtml( QString::fromUtf8("<p style=\"color:#888;\"><i>%1</i></p>")
+                      .arg( tr("Agent stopped. Click Connect… to reconnect or switch provider.") ) );
 }
 
 void
@@ -485,9 +693,12 @@ AIChatPanel::onDestructiveToolRequested(const QString& toolName,
         return;
     }
 
-    // Approval happens here, in Natron, with the real node names -- the agent
-    // CLI exposes no permission callback, so this is the only place it can be
-    // asked honestly.
+    if ( _imp->autoApprove && _imp->autoApprove->isChecked() ) {
+        *allowed = true;
+
+        return;
+    }
+
     const QMessageBox::StandardButton answer =
         QMessageBox::question( this,
                                tr("AI Assistant"),
@@ -511,7 +722,6 @@ AIChatPanel::eventFilter(QObject* watched,
         QKeyEvent* key = static_cast<QKeyEvent*>(event);
         if ( ( key->key() == Qt::Key_Return ) || ( key->key() == Qt::Key_Enter ) ) {
             if ( key->modifiers() & Qt::ShiftModifier ) {
-                // Let the editor insert the newline itself.
                 return false;
             }
             onSendClicked();
@@ -526,8 +736,6 @@ AIChatPanel::eventFilter(QObject* watched,
 void
 AIChatPanel::keyPressEvent(QKeyEvent* e)
 {
-    // Enter sends, Shift+Enter inserts a newline. The input is a child widget,
-    // so the real handling is in the event filter; this covers the panel itself.
     if ( ( ( e->key() == Qt::Key_Return ) || ( e->key() == Qt::Key_Enter ) ) &&
          !( e->modifiers() & Qt::ShiftModifier ) ) {
         onSendClicked();

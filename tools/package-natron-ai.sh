@@ -171,6 +171,17 @@ for f in "${NATRON_DIR}/Gui/Resources/Fonts"; do
     [[ -d "${f}" ]] && cp -r "${f}" "${DIST}/Resources/" || true
 done
 
+# Fontconfig configuration. AppManager.cpp:339-344 points FONTCONFIG_PATH at
+# <bin>/../Resources/etc/fonts and prints a warning when it is absent; the
+# comment there notes it is "required by plugins using fontconfig", which is
+# every text plug-in. Without it font lookup falls back to defaults and text
+# renders differently -- or not at all -- on the target machine.
+if [[ -d "${MINGW}/etc/fonts" ]]; then
+    mkdir -p "${DIST}/Resources/etc"
+    cp -r "${MINGW}/etc/fonts" "${DIST}/Resources/etc/"
+    echo "    fontconfig"
+fi
+
 # ---------------------------------------------------------------------------
 # 7. Launcher. Sets OCIO and the OFX path relative to the folder, so the whole
 #    thing is movable and needs no installation.
@@ -226,6 +237,46 @@ READMETXT
 # ---------------------------------------------------------------------------
 # 8. Zip it.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 7b. Guard: every plug-in a bundled PyPlug instantiates must actually ship.
+#
+# This is how the Glow failure escaped -- the CImg plug-ins were skipped at
+# build time, so Glow.py's createNode("net.sf.cimg.CImgBloom") returned None and
+# the user got "'NoneType' object has no attribute 'setScriptName'". Natron
+# lists the PyPlug in its menu regardless, so nothing warns until someone
+# clicks it.
+# ---------------------------------------------------------------------------
+echo "==> Checking PyPlug dependencies"
+if [[ -d "${DIST}/Plugins/PyPlugs" ]]; then
+    grep -ho 'createNode("[^"]*"' "${DIST}/Plugins/PyPlugs/"*.py 2>/dev/null \
+        | sed 's/createNode("//; s/"//' | sort -u > "${DIST}/.needed_ids" || true
+
+    cat > "${DIST}/.checkdeps.py" <<'CHECKDEPS'
+import os, sys
+here = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv else "."
+needed = [l.strip() for l in open(NEEDED_FILE) if l.strip()]
+have = set(NatronEngine.natron.getPluginIDs())
+missing = [n for n in needed if n not in have]
+sys.stderr.write("PYPLUG_DEPS %d needed, %d missing\n" % (len(needed), len(missing)))
+for m in missing:
+    sys.stderr.write("PYPLUG_MISSING %s\n" % m)
+os._exit(0)
+CHECKDEPS
+    # Inject the path rather than relying on __file__, which is undefined for a
+    # script Natron exec()s rather than imports.
+    sed -i "s|NEEDED_FILE|r'$(cygpath -m "${DIST}/.needed_ids")'|" "${DIST}/.checkdeps.py"
+
+    dep_out="$( "${DIST}/bin/NatronRenderer.exe" -t "${DIST}/.checkdeps.py" 2>&1 || true )"
+    echo "${dep_out}" | grep 'PYPLUG_DEPS' || true
+    if echo "${dep_out}" | grep -q 'PYPLUG_MISSING'; then
+        echo "${dep_out}" | grep 'PYPLUG_MISSING'
+        echo "ERROR: bundled PyPlugs reference plug-ins that are not in the package."
+        rm -f "${DIST}/.checkdeps.py" "${DIST}/.needed_ids"
+        exit 1
+    fi
+    rm -f "${DIST}/.checkdeps.py" "${DIST}/.needed_ids"
+fi
+
 echo "==> Zipping"
 ( cd "${NATRON_DIR}/dist" && rm -f NatronAI-win64.zip && zip -qr9 NatronAI-win64.zip NatronAI )
 

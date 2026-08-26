@@ -77,7 +77,13 @@ SOURCES += \
     AddKnobDialog.cpp \
     AIAgentBackend.cpp \
     AIChatPanel.cpp \
+    AIConnectionSettings.cpp \
     AIMcpServer.cpp \
+    AIProviderConnectDialog.cpp \
+    AIProviderRegistry.cpp \
+    CodexCliBackend.cpp \
+    GeminiCliBackend.cpp \
+    HttpToolAgentBackend.cpp \
     AnimatedCheckBox.cpp \
     AutoHideToolBar.cpp \
     BackdropGui.cpp \
@@ -232,7 +238,11 @@ HEADERS += \
     AddKnobDialog.h \
     AIAgentBackend.h \
     AIChatPanel.h \
+    AIConnectionSettings.h \
     AIMcpServer.h \
+    AIProviderConnectDialog.h \
+    AIProviderRegistry.h \
+    HttpToolAgentBackend.h \
     AnimatedCheckBox.h \
     AutoHideToolBar.h \
     BackdropGui.h \
