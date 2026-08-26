@@ -29,6 +29,7 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -54,9 +55,10 @@ struct AIProviderConnectDialogPrivate
     QPushButton* recheckCliButton;
     QPushButton* useCliButton;
     QLineEdit* apiKeyEdit;
-    QLineEdit* modelEdit;
+    QComboBox* modelCombo;
     QLineEdit* baseUrlEdit;
     QPushButton* useApiButton;
+    QPushButton* useCliWithKeyButton;
     QPushButton* useCustomButton;
     QPushButton* clearKeyButton;
 
@@ -70,9 +72,10 @@ struct AIProviderConnectDialogPrivate
         , recheckCliButton(0)
         , useCliButton(0)
         , apiKeyEdit(0)
-        , modelEdit(0)
+        , modelCombo(0)
         , baseUrlEdit(0)
         , useApiButton(0)
+        , useCliWithKeyButton(0)
         , useCustomButton(0)
         , clearKeyButton(0)
     {
@@ -102,13 +105,17 @@ AIProviderConnectDialog::AIProviderConnectDialog(const QString& providerId,
     root->addWidget(_imp->hintLabel);
 
     if (_imp->info && _imp->info->supportsCli) {
-        QGroupBox* cliBox = new QGroupBox(tr("CLI (subscription login)"), this);
+        const bool isAgy = (_imp->providerId == QString::fromUtf8("antigravity"));
+        QGroupBox* cliBox = new QGroupBox(
+            isAgy ? tr("Antigravity CLI (agy) — Google account")
+                  : tr("CLI (subscription login)"), this);
         QVBoxLayout* cliLayout = new QVBoxLayout(cliBox);
         _imp->cliStatusLabel = new QLabel(cliBox);
         cliLayout->addWidget(_imp->cliStatusLabel);
         QHBoxLayout* cliButtons = new QHBoxLayout();
         _imp->recheckCliButton = new QPushButton(tr("Recheck"), cliBox);
-        _imp->useCliButton = new QPushButton(tr("Use CLI"), cliBox);
+        _imp->useCliButton = new QPushButton(
+            isAgy ? tr("Use CLI (Google login)") : tr("Use CLI"), cliBox);
         cliButtons->addWidget(_imp->recheckCliButton);
         cliButtons->addWidget(_imp->useCliButton);
         cliButtons->addStretch(1);
@@ -119,40 +126,71 @@ AIProviderConnectDialog::AIProviderConnectDialog(const QString& providerId,
         connect( _imp->useCliButton, SIGNAL( clicked() ), this, SLOT( onUseCli() ) );
     }
 
-    QGroupBox* apiBox = new QGroupBox(tr("API key"), this);
-    QFormLayout* apiForm = new QFormLayout(apiBox);
-    _imp->apiKeyEdit = new QLineEdit(apiBox);
-    _imp->apiKeyEdit->setEchoMode(QLineEdit::Password);
-    _imp->apiKeyEdit->setText(_imp->config.apiKey);
-    _imp->apiKeyEdit->setPlaceholderText(tr("Paste API key (stored only on this machine)"));
-    apiForm->addRow(tr("API key"), _imp->apiKeyEdit);
+    {
+        const bool isAgy = (_imp->providerId == QString::fromUtf8("antigravity"));
+        QGroupBox* apiBox = new QGroupBox(
+            isAgy ? tr("Gemini API key methods") : tr("API key"), this);
+        QFormLayout* apiForm = new QFormLayout(apiBox);
+        _imp->apiKeyEdit = new QLineEdit(apiBox);
+        _imp->apiKeyEdit->setEchoMode(QLineEdit::Password);
+        _imp->apiKeyEdit->setText(_imp->config.apiKey);
+        _imp->apiKeyEdit->setPlaceholderText(
+            isAgy ? tr("Gemini API key from Google AI Studio")
+                  : tr("Paste API key (stored only on this machine)"));
+        apiForm->addRow(tr("API key"), _imp->apiKeyEdit);
 
-    _imp->modelEdit = new QLineEdit(apiBox);
-    _imp->modelEdit->setText(_imp->config.model);
-    apiForm->addRow(tr("Model"), _imp->modelEdit);
+        _imp->modelCombo = new QComboBox(apiBox);
+        _imp->modelCombo->setEditable(true);
+        _imp->modelCombo->setInsertPolicy(QComboBox::NoInsert);
+        {
+            const QStringList suggested = AIProviderRegistry::suggestedModels(_imp->providerId);
+            for (int i = 0; i < suggested.size(); ++i) {
+                _imp->modelCombo->addItem(suggested.at(i));
+            }
+            QString model = _imp->config.model;
+            if ( model.isEmpty() && _imp->info ) {
+                model = _imp->info->defaultModel;
+            }
+            if ( !model.isEmpty() && ( _imp->modelCombo->findText(model) < 0 ) ) {
+                _imp->modelCombo->insertItem(0, model);
+            }
+            if ( !model.isEmpty() ) {
+                _imp->modelCombo->setCurrentText(model);
+            }
+        }
+        apiForm->addRow(tr("Model"), _imp->modelCombo);
 
-    _imp->baseUrlEdit = new QLineEdit(apiBox);
-    _imp->baseUrlEdit->setText(_imp->config.baseUrl);
-    apiForm->addRow(tr("Base URL"), _imp->baseUrlEdit);
+        _imp->baseUrlEdit = new QLineEdit(apiBox);
+        _imp->baseUrlEdit->setText(_imp->config.baseUrl);
+        apiForm->addRow(tr("Base URL"), _imp->baseUrlEdit);
 
-    QHBoxLayout* apiButtons = new QHBoxLayout();
-    _imp->useApiButton = new QPushButton(tr("Use API key"), apiBox);
-    _imp->clearKeyButton = new QPushButton(tr("Clear saved key"), apiBox);
-    apiButtons->addWidget(_imp->useApiButton);
-    apiButtons->addWidget(_imp->clearKeyButton);
-    apiButtons->addStretch(1);
-    apiForm->addRow(apiButtons);
+        QHBoxLayout* apiButtons = new QHBoxLayout();
+        if (isAgy) {
+            _imp->useCliWithKeyButton = new QPushButton(tr("Use key via Antigravity CLI"), apiBox);
+            _imp->useApiButton = new QPushButton(tr("Use direct Gemini HTTP"), apiBox);
+            apiButtons->addWidget(_imp->useCliWithKeyButton);
+            apiButtons->addWidget(_imp->useApiButton);
+            connect( _imp->useCliWithKeyButton, SIGNAL( clicked() ), this, SLOT( onUseCliWithApiKey() ) );
+        } else {
+            _imp->useApiButton = new QPushButton(tr("Use API key"), apiBox);
+            apiButtons->addWidget(_imp->useApiButton);
+        }
+        _imp->clearKeyButton = new QPushButton(tr("Clear saved key"), apiBox);
+        apiButtons->addWidget(_imp->clearKeyButton);
+        apiButtons->addStretch(1);
+        apiForm->addRow(apiButtons);
 
-    if (_imp->info && _imp->info->supportsCustomEndpoint) {
-        _imp->useCustomButton = new QPushButton(tr("Use custom endpoint"), apiBox);
-        apiButtons->addWidget(_imp->useCustomButton);
-        connect( _imp->useCustomButton, SIGNAL( clicked() ), this, SLOT( onUseCustom() ) );
+        if (_imp->info && _imp->info->supportsCustomEndpoint) {
+            _imp->useCustomButton = new QPushButton(tr("Use custom endpoint"), apiBox);
+            apiButtons->addWidget(_imp->useCustomButton);
+            connect( _imp->useCustomButton, SIGNAL( clicked() ), this, SLOT( onUseCustom() ) );
+        }
+
+        root->addWidget(apiBox);
+
+        connect( _imp->useApiButton, SIGNAL( clicked() ), this, SLOT( onUseApiKey() ) );
+        connect( _imp->clearKeyButton, SIGNAL( clicked() ), this, SLOT( onClearKey() ) );
     }
-
-    root->addWidget(apiBox);
-
-    connect( _imp->useApiButton, SIGNAL( clicked() ), this, SLOT( onUseApiKey() ) );
-    connect( _imp->clearKeyButton, SIGNAL( clicked() ), this, SLOT( onClearKey() ) );
 
     QDialogButtonBox* box = new QDialogButtonBox(QDialogButtonBox::Cancel, this);
     connect( box, SIGNAL( rejected() ), this, SLOT( reject() ) );
@@ -179,19 +217,29 @@ AIProviderConnectDialog::refreshCliStatus()
     }
 
     const QString exe = AIProviderRegistry::findCliExecutable(_imp->info->cliBinaryName);
-    if ( exe.isEmpty() ) {
+    QString found = exe;
+    if ( found.isEmpty() && ( _imp->providerId == QString::fromUtf8("antigravity") ) ) {
+        found = AIProviderRegistry::findCliExecutable( QString::fromUtf8("antigravity") );
+    }
+    if ( found.isEmpty() ) {
         _imp->cliStatusLabel->setText( QString::fromUtf8("<span style=\"color:#c44;\">%1</span><br/><i>%2</i>")
                                        .arg( tr("CLI not found on PATH.") )
                                        .arg( _imp->info->installHint ) );
         if (_imp->useCliButton) {
             _imp->useCliButton->setEnabled(false);
         }
+        if (_imp->useCliWithKeyButton) {
+            _imp->useCliWithKeyButton->setEnabled(false);
+        }
     } else {
         _imp->cliStatusLabel->setText( QString::fromUtf8("<span style=\"color:#4a4;\">%1</span><br/><code>%2</code>")
                                        .arg( tr("CLI found.") )
-                                       .arg(exe) );
+                                       .arg(found) );
         if (_imp->useCliButton) {
             _imp->useCliButton->setEnabled(true);
+        }
+        if (_imp->useCliWithKeyButton) {
+            _imp->useCliWithKeyButton->setEnabled(true);
         }
     }
 }
@@ -207,10 +255,28 @@ AIProviderConnectDialog::onUseCli()
 {
     _imp->config.providerId = _imp->providerId;
     _imp->config.method = eAIConnectionMethodCli;
-    _imp->config.apiKey = _imp->apiKeyEdit->text().trimmed();
-    _imp->config.model = _imp->modelEdit->text().trimmed();
+    // Google-login path: do not carry a key unless the user chose "via CLI".
+    _imp->config.apiKey.clear();
+    _imp->config.model = _imp->modelCombo->currentText().trimmed();
     _imp->config.baseUrl = _imp->baseUrlEdit->text().trimmed();
     _imp->config.autoConnect = true;
+    accept();
+}
+
+void
+AIProviderConnectDialog::onUseCliWithApiKey()
+{
+    _imp->config.providerId = _imp->providerId;
+    _imp->config.method = eAIConnectionMethodCli;
+    _imp->config.apiKey = _imp->apiKeyEdit->text().trimmed();
+    _imp->config.model = _imp->modelCombo->currentText().trimmed();
+    _imp->config.baseUrl = _imp->baseUrlEdit->text().trimmed();
+    _imp->config.autoConnect = true;
+    if ( _imp->config.apiKey.isEmpty() ) {
+        _imp->hintLabel->setText( tr("Paste a Gemini API key first.") );
+
+        return;
+    }
     accept();
 }
 
@@ -220,7 +286,7 @@ AIProviderConnectDialog::onUseApiKey()
     _imp->config.providerId = _imp->providerId;
     _imp->config.method = eAIConnectionMethodApiKey;
     _imp->config.apiKey = _imp->apiKeyEdit->text().trimmed();
-    _imp->config.model = _imp->modelEdit->text().trimmed();
+    _imp->config.model = _imp->modelCombo->currentText().trimmed();
     _imp->config.baseUrl = _imp->baseUrlEdit->text().trimmed();
     _imp->config.autoConnect = true;
 
@@ -241,7 +307,7 @@ AIProviderConnectDialog::onUseCustom()
     _imp->config.providerId = _imp->providerId;
     _imp->config.method = eAIConnectionMethodCustom;
     _imp->config.apiKey = _imp->apiKeyEdit->text().trimmed();
-    _imp->config.model = _imp->modelEdit->text().trimmed();
+    _imp->config.model = _imp->modelCombo->currentText().trimmed();
     _imp->config.baseUrl = _imp->baseUrlEdit->text().trimmed();
     _imp->config.autoConnect = true;
     if ( _imp->config.baseUrl.isEmpty() ) {

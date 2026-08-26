@@ -87,6 +87,12 @@ AIAgentBackend::create(const AIConnectionConfig& config,
 
         return backend;
     }
+    if ( ( config.method == eAIConnectionMethodCli ) && ( id == QString::fromUtf8("antigravity") ) ) {
+        AntigravityCliBackend* backend = new AntigravityCliBackend(parent);
+        backend->configure(config);
+
+        return backend;
+    }
 
     // API key, custom endpoint, Ollama, ChatGPT, or CLI providers falling back to HTTP.
     if ( ( config.method == eAIConnectionMethodApiKey ) ||
@@ -97,7 +103,8 @@ AIAgentBackend::create(const AIConnectionConfig& config,
          ( ( config.method != eAIConnectionMethodCli ) &&
            ( ( id == QString::fromUtf8("claude") ) ||
              ( id == QString::fromUtf8("codex") ) ||
-             ( id == QString::fromUtf8("gemini") ) ) ) ) {
+             ( id == QString::fromUtf8("gemini") ) ||
+             ( id == QString::fromUtf8("antigravity") ) ) ) ) {
         HttpToolAgentBackend* backend = new HttpToolAgentBackend(parent);
         backend->configure(config);
 

@@ -245,6 +245,9 @@ GeminiCliBackend::send(const QString& text)
     args << QString::fromUtf8("-p");
     args << text;
     args << QString::fromUtf8("--yolo");
+    if ( !_geminiImp->config.model.trimmed().isEmpty() ) {
+        args << QString::fromUtf8("-m") << _geminiImp->config.model.trimmed();
+    }
 
     _geminiImp->process = new QProcess(this);
     _geminiImp->process->setProgram(exe);

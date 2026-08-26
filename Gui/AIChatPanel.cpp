@@ -32,11 +32,13 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QComboBox>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QCheckBox>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSizePolicy>
 #include <QTextBrowser>
 #include <QUrl>
 #include <QHBoxLayout>
@@ -72,18 +74,22 @@ struct AIChatPanelPrivate
     QPushButton* sendButton;
     QPushButton* stopButton;
     QComboBox* providerCombo;
+    QComboBox* modelCombo;
     QPushButton* connectButton;
     QLabel* providerLabel;
+    QCheckBox* autoConnectBox;
     QCheckBox* autoApprove;
 
     AIMcpServer* server;
     AIAgentBackend* backend;
     AIConnectionConfig connection;
     bool agentConnected;
+    bool userStopped;
 
     bool turnInProgress;
     bool assistantBubbleOpen;
     bool ignoreProviderChange;
+    bool ignoreModelChange;
     bool welcomeShown;
 
     AIChatPanelPrivate(AIChatPanel* publicInterface,
@@ -97,16 +103,20 @@ struct AIChatPanelPrivate
         , sendButton(0)
         , stopButton(0)
         , providerCombo(0)
+        , modelCombo(0)
         , connectButton(0)
         , providerLabel(0)
+        , autoConnectBox(0)
         , autoApprove(0)
         , server(0)
         , backend(0)
         , connection()
         , agentConnected(false)
+        , userStopped(false)
         , turnInProgress(false)
         , assistantBubbleOpen(false)
         , ignoreProviderChange(false)
+        , ignoreModelChange(false)
         , welcomeShown(false)
     {
     }
@@ -238,7 +248,23 @@ AIChatPanel::AIChatPanel(Gui* gui)
     providerRow->addWidget(_imp->providerCombo, 1);
     _imp->connectButton = new QPushButton(tr("Connect..."), this);
     providerRow->addWidget(_imp->connectButton);
+    _imp->autoConnectBox = new QCheckBox(tr("Auto-connect"), this);
+    _imp->autoConnectBox->setToolTip( tr("When checked, Natron connects automatically when you open this panel "
+                                         "or change provider, using the last method (CLI / API key) that works.") );
+    _imp->autoConnectBox->setChecked( AIConnectionSettings::isAutoConnectEnabled() );
+    providerRow->addWidget(_imp->autoConnectBox);
     _imp->mainLayout->addLayout(providerRow);
+
+    QHBoxLayout* modelRow = new QHBoxLayout();
+    modelRow->addWidget( new QLabel(tr("Model:"), this) );
+    _imp->modelCombo = new QComboBox(this);
+    _imp->modelCombo->setEditable(true);
+    _imp->modelCombo->setInsertPolicy(QComboBox::NoInsert);
+    _imp->modelCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    _imp->modelCombo->setToolTip( tr("Pick a suggested model or type any model id the provider accepts. "
+                                     "Saved per provider on this machine.") );
+    modelRow->addWidget(_imp->modelCombo, 1);
+    _imp->mainLayout->addLayout(modelRow);
 
     _imp->transcript = new QTextBrowser(this);
     _imp->transcript->setOpenExternalLinks(true);
@@ -276,8 +302,16 @@ AIChatPanel::AIChatPanel(Gui* gui)
     QObject::connect( _imp->sendButton, SIGNAL( clicked() ), this, SLOT( onSendClicked() ) );
     QObject::connect( _imp->stopButton, SIGNAL( clicked() ), this, SLOT( onStopClicked() ) );
     QObject::connect( _imp->connectButton, SIGNAL( clicked() ), this, SLOT( onConnectClicked() ) );
+    QObject::connect( _imp->autoConnectBox, SIGNAL( toggled(bool) ),
+                      this, SLOT( onAutoConnectToggled(bool) ) );
     QObject::connect( _imp->providerCombo, SIGNAL( currentIndexChanged(int) ),
                       this, SLOT( onProviderComboChanged(int) ) );
+    QObject::connect( _imp->modelCombo, SIGNAL( activated(QString) ),
+                      this, SLOT( onModelComboChanged(QString) ) );
+    if ( _imp->modelCombo->lineEdit() ) {
+        QObject::connect( _imp->modelCombo->lineEdit(), SIGNAL( editingFinished() ),
+                          this, SLOT( onModelEditingFinished() ) );
+    }
 
     _imp->connection = AIConnectionSettings::load();
     _imp->ignoreProviderChange = true;
@@ -287,6 +321,7 @@ AIChatPanel::AIChatPanel(Gui* gui)
     }
     _imp->ignoreProviderChange = false;
 
+    refreshModelCombo();
     updateProviderFooter();
 }
 
@@ -360,13 +395,18 @@ AIChatPanel::updateProviderFooter()
     const AIProviderInfo* info = AIProviderRegistry::findById(_imp->connection.providerId);
     const QString name = info ? info->displayName : tr("Provider");
     if (_imp->agentConnected && _imp->backend) {
+        const QString model = _imp->connection.model.trimmed();
         _imp->providerLabel->setText(
-            tr("powered by %1 (%2) - your account; conversation and project content are sent to the provider")
+            tr("powered by %1 (%2%3) - your account; conversation and project content are sent to the provider")
             .arg( _imp->backend->displayName() )
-            .arg( _imp->backend->connectionMethodLabel() ) );
-        _imp->setStatus( tr("%1 · %2 connected")
+            .arg( _imp->backend->connectionMethodLabel() )
+            .arg( model.isEmpty() ? QString()
+                                  : ( QString::fromUtf8(" · ") + model ) ) );
+        _imp->setStatus( tr("%1 · %2%3 connected")
                          .arg( _imp->backend->displayName() )
-                         .arg( _imp->backend->connectionMethodLabel() ) );
+                         .arg( _imp->backend->connectionMethodLabel() )
+                         .arg( model.isEmpty() ? QString()
+                                               : ( QString::fromUtf8(" · ") + model ) ) );
     } else {
         _imp->providerLabel->setText(
             tr("%1 - not connected. Click Connect… to use CLI, an API key, or a custom endpoint.")
@@ -396,6 +436,8 @@ AIChatPanel::applyConnection(const AIConnectionConfig& config,
         _imp->providerCombo->setCurrentIndex(idx);
     }
     _imp->ignoreProviderChange = false;
+
+    refreshModelCombo();
 
     if (!startBackend || ( config.method == eAIConnectionMethodNone )) {
         updateProviderFooter();
@@ -456,6 +498,133 @@ AIChatPanel::applyConnection(const AIConnectionConfig& config,
 }
 
 void
+AIChatPanel::refreshModelCombo()
+{
+    if (!_imp->modelCombo) {
+        return;
+    }
+
+    const QString providerId = _imp->connection.providerId.isEmpty()
+                               ? _imp->providerCombo->currentData().toString()
+                               : _imp->connection.providerId;
+    const AIProviderInfo* info = AIProviderRegistry::findById(providerId);
+    QString current = _imp->connection.model.trimmed();
+    if ( current.isEmpty() && info ) {
+        current = info->defaultModel;
+    }
+
+    _imp->ignoreModelChange = true;
+    _imp->modelCombo->clear();
+    const QStringList suggested = AIProviderRegistry::suggestedModels(providerId);
+    for (int i = 0; i < suggested.size(); ++i) {
+        _imp->modelCombo->addItem(suggested.at(i));
+    }
+    if ( !current.isEmpty() && ( _imp->modelCombo->findText(current) < 0 ) ) {
+        _imp->modelCombo->insertItem(0, current);
+    }
+    if ( !current.isEmpty() ) {
+        _imp->modelCombo->setCurrentText(current);
+    } else if (_imp->modelCombo->count() > 0) {
+        _imp->modelCombo->setCurrentIndex(0);
+        current = _imp->modelCombo->currentText();
+    }
+    if ( _imp->connection.model != current ) {
+        _imp->connection.model = current;
+    }
+    _imp->ignoreModelChange = false;
+}
+
+void
+AIChatPanel::applySelectedModel(bool reconnectIfNeeded)
+{
+    if (!_imp->modelCombo) {
+        return;
+    }
+
+    const QString model = _imp->modelCombo->currentText().trimmed();
+    if ( model.isEmpty() || ( model == _imp->connection.model ) ) {
+        return;
+    }
+
+    _imp->connection.model = model;
+    AIConnectionSettings::save(_imp->connection);
+
+    if (reconnectIfNeeded &&
+        _imp->agentConnected &&
+        ( _imp->connection.method != eAIConnectionMethodNone )) {
+        _imp->userStopped = false;
+        _imp->appendHtml( QString::fromUtf8("<p style=\"color:#888;\"><i>%1</i></p>")
+                          .arg( tr("Switching model to %1…").arg(model) ) );
+        applyConnection(_imp->connection, true);
+    } else {
+        updateProviderFooter();
+    }
+}
+
+void
+AIChatPanel::onModelComboChanged(const QString& /*model*/)
+{
+    if (_imp->ignoreModelChange) {
+        return;
+    }
+    applySelectedModel(true);
+}
+
+void
+AIChatPanel::onModelEditingFinished()
+{
+    if (_imp->ignoreModelChange) {
+        return;
+    }
+    applySelectedModel(true);
+}
+
+bool
+AIChatPanel::tryAutoConnect()
+{
+    if ( _imp->autoConnectBox && !_imp->autoConnectBox->isChecked() ) {
+        return false;
+    }
+    if (_imp->userStopped) {
+        return false;
+    }
+    if (_imp->agentConnected && _imp->backend && _imp->backend->isRunning()) {
+        return true;
+    }
+
+    AIConnectionConfig config = _imp->connection;
+    if ( config.providerId.isEmpty() ) {
+        config.providerId = _imp->providerCombo->currentData().toString();
+    }
+    // Merge latest saved prefs for this provider (keys, method).
+    AIConnectionConfig saved = AIConnectionSettings::loadForProvider(config.providerId);
+    if ( config.apiKey.isEmpty() ) {
+        config.apiKey = saved.apiKey;
+    }
+    if ( config.method == eAIConnectionMethodNone ) {
+        config.method = saved.method;
+    }
+    if ( config.model.isEmpty() ) {
+        config.model = saved.model;
+    }
+    if ( config.baseUrl.isEmpty() ) {
+        config.baseUrl = saved.baseUrl;
+    }
+    if ( config.cliPath.isEmpty() ) {
+        config.cliPath = saved.cliPath;
+    }
+
+    if ( !AIConnectionSettings::resolveAutoMethod(config) ) {
+        return false;
+    }
+
+    config.autoConnect = true;
+    applyConnection(config, true);
+
+    return _imp->agentConnected;
+}
+
+void
 AIChatPanel::ensureStarted()
 {
     if (!_imp->server) {
@@ -483,23 +652,22 @@ AIChatPanel::ensureStarted()
         return;
     }
 
-    if ( _imp->connection.autoConnect &&
-         ( _imp->connection.method != eAIConnectionMethodNone ) &&
-         !_imp->agentConnected ) {
-        applyConnection(_imp->connection, true);
-    } else {
-        updateProviderFooter();
-        if (!_imp->agentConnected && !_imp->welcomeShown) {
-            _imp->welcomeShown = true;
-            _imp->appendHtml( QString::fromUtf8("<p><i>%1</i></p>")
-                              .arg( tr("Choose a provider and click Connect… (CLI login, API key, or custom endpoint).") ) );
-        }
+    if ( tryAutoConnect() ) {
+        return;
+    }
+
+    updateProviderFooter();
+    if (!_imp->agentConnected && !_imp->welcomeShown) {
+        _imp->welcomeShown = true;
+        _imp->appendHtml( QString::fromUtf8("<p><i>%1</i></p>")
+                          .arg( tr("Auto-connect could not start a provider. Click Connect… or install a CLI / paste an API key.") ) );
     }
 }
 
 void
 AIChatPanel::onPanelMadeCurrent()
 {
+    _imp->userStopped = false;
     ensureStarted();
 }
 
@@ -514,7 +682,20 @@ AIChatPanel::onConnectClicked()
         return;
     }
 
-    applyConnection(dialog.resultConfig(), true);
+    _imp->userStopped = false;
+    AIConnectionConfig cfg = dialog.resultConfig();
+    cfg.autoConnect = true;
+    applyConnection(cfg, true);
+}
+
+void
+AIChatPanel::onAutoConnectToggled(bool checked)
+{
+    AIConnectionSettings::setAutoConnectEnabled(checked);
+    if (checked) {
+        _imp->userStopped = false;
+        tryAutoConnect();
+    }
 }
 
 void
@@ -535,11 +716,10 @@ AIChatPanel::onProviderComboChanged(int index)
     }
 
     const QString providerId = _imp->providerCombo->currentData().toString();
-    if (providerId == _imp->connection.providerId) {
+    if (providerId == _imp->connection.providerId && _imp->agentConnected) {
         return;
     }
 
-    // Switching providers disconnects until the user clicks Connect again.
     if (_imp->backend) {
         _imp->backend->disconnect(this);
         _imp->backend->stop();
@@ -548,14 +728,17 @@ AIChatPanel::onProviderComboChanged(int index)
     }
 
     _imp->agentConnected = false;
+    _imp->userStopped = false;
     _imp->connection = AIConnectionSettings::loadForProvider(providerId);
     _imp->connection.providerId = providerId;
-    // Do not auto-start on combo change.
-    _imp->connection.autoConnect = false;
     AIConnectionSettings::save(_imp->connection);
-    updateProviderFooter();
-    _imp->appendHtml( QString::fromUtf8("<p style=\"color:#888;\"><i>%1</i></p>")
-                      .arg( tr("Provider changed. Click Connect… to authenticate.") ) );
+    refreshModelCombo();
+
+    if ( !tryAutoConnect() ) {
+        updateProviderFooter();
+        _imp->appendHtml( QString::fromUtf8("<p style=\"color:#888;\"><i>%1</i></p>")
+                          .arg( tr("Provider changed. Auto-connect unavailable — click Connect…") ) );
+    }
 }
 
 void
@@ -569,11 +752,17 @@ AIChatPanel::onSendClicked()
 
     ensureStarted();
 
-    if ( !_imp->backend || !_imp->backend->isRunning() ) {
-        _imp->appendHtml( QString::fromUtf8("<p style=\"color:#c44;\">%1</p>")
-                          .arg( tr("Not connected. Click Connect… to choose CLI or an API key.") ) );
+    // Commit any typed model before the turn (editingFinished may not have run).
+    applySelectedModel(true);
 
-        return;
+    if ( !_imp->backend || !_imp->backend->isRunning() ) {
+        _imp->userStopped = false;
+        if ( !tryAutoConnect() ) {
+            _imp->appendHtml( QString::fromUtf8("<p style=\"color:#c44;\">%1</p>")
+                              .arg( tr("Not connected. Click Connect… to choose CLI or an API key.") ) );
+
+            return;
+        }
     }
 
     _imp->appendUserBubble(text);
@@ -593,6 +782,9 @@ AIChatPanel::onSendClicked()
 void
 AIChatPanel::onStopClicked()
 {
+    // Interrupt the turn; do not auto-reconnect until the user reopens the
+    // panel, toggles Auto-connect, changes provider, or clicks Connect…
+    _imp->userStopped = true;
     if (_imp->backend) {
         _imp->backend->interrupt();
     }
@@ -679,9 +871,10 @@ AIChatPanel::onBackendFinished()
 {
     onBackendTurnFinished();
     _imp->agentConnected = false;
+    _imp->userStopped = true;
     updateProviderFooter();
     _imp->appendHtml( QString::fromUtf8("<p style=\"color:#888;\"><i>%1</i></p>")
-                      .arg( tr("Agent stopped. Click Connect… to reconnect or switch provider.") ) );
+                      .arg( tr("Agent stopped. Reopen this panel or click Connect… to reconnect.") ) );
 }
 
 void

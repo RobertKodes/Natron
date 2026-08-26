@@ -57,7 +57,8 @@ apiKindForProvider(const QString& providerId)
     if (providerId == QString::fromUtf8("claude")) {
         return eHttpApiAnthropic;
     }
-    if (providerId == QString::fromUtf8("gemini")) {
+    if ( ( providerId == QString::fromUtf8("gemini") ) ||
+         ( providerId == QString::fromUtf8("antigravity") ) ) {
         return eHttpApiGemini;
     }
 

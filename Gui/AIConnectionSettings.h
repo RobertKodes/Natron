@@ -98,6 +98,17 @@ public:
     static AIConnectionMethodEnum methodFromString(const QString& s);
 
     static QString methodToString(AIConnectionMethodEnum method);
+
+    /// Global preference: reconnect when the panel opens / provider changes.
+    static bool isAutoConnectEnabled();
+
+    static void setAutoConnectEnabled(bool enabled);
+
+    /**
+     * @brief If method is unset, pick CLI when the binary exists, else API when
+     * a key is saved. Returns true when a usable method is available.
+     **/
+    static bool resolveAutoMethod(AIConnectionConfig& config);
 };
 
 NATRON_NAMESPACE_EXIT

@@ -49,6 +49,13 @@ makeCatalog()
         p.supportsApi = true;
         p.supportsCustomEndpoint = false;
         p.defaultModel = QString::fromUtf8("sonnet");
+        p.suggestedModels = QStringList()
+                            << QString::fromUtf8("sonnet")
+                            << QString::fromUtf8("opus")
+                            << QString::fromUtf8("haiku")
+                            << QString::fromUtf8("claude-sonnet-4-5")
+                            << QString::fromUtf8("claude-opus-4-5")
+                            << QString::fromUtf8("claude-haiku-4-5");
         p.defaultBaseUrl = QString::fromUtf8("https://api.anthropic.com");
         p.apiKeyEnvVar = QString::fromUtf8("ANTHROPIC_API_KEY");
         p.cliBinaryName = QString::fromUtf8("claude");
@@ -63,6 +70,12 @@ makeCatalog()
         p.supportsApi = true;
         p.supportsCustomEndpoint = false;
         p.defaultModel = QString::fromUtf8("gpt-4.1");
+        p.suggestedModels = QStringList()
+                            << QString::fromUtf8("gpt-4.1")
+                            << QString::fromUtf8("gpt-4o")
+                            << QString::fromUtf8("o3")
+                            << QString::fromUtf8("o4-mini")
+                            << QString::fromUtf8("gpt-4.1-mini");
         p.defaultBaseUrl = QString::fromUtf8("https://api.openai.com/v1");
         p.apiKeyEnvVar = QString::fromUtf8("OPENAI_API_KEY");
         p.cliBinaryName = QString();
@@ -77,6 +90,11 @@ makeCatalog()
         p.supportsApi = true;
         p.supportsCustomEndpoint = false;
         p.defaultModel = QString::fromUtf8("gpt-5");
+        p.suggestedModels = QStringList()
+                            << QString::fromUtf8("gpt-5")
+                            << QString::fromUtf8("gpt-4.1")
+                            << QString::fromUtf8("o3")
+                            << QString::fromUtf8("o4-mini");
         p.defaultBaseUrl = QString::fromUtf8("https://api.openai.com/v1");
         p.apiKeyEnvVar = QString::fromUtf8("CODEX_API_KEY");
         p.cliBinaryName = QString::fromUtf8("codex");
@@ -91,10 +109,35 @@ makeCatalog()
         p.supportsApi = true;
         p.supportsCustomEndpoint = false;
         p.defaultModel = QString::fromUtf8("gemini-2.5-flash");
+        p.suggestedModels = QStringList()
+                            << QString::fromUtf8("gemini-2.5-flash")
+                            << QString::fromUtf8("gemini-2.5-pro")
+                            << QString::fromUtf8("gemini-2.0-flash");
         p.defaultBaseUrl = QString::fromUtf8("https://generativelanguage.googleapis.com/v1beta");
         p.apiKeyEnvVar = QString::fromUtf8("GEMINI_API_KEY");
         p.cliBinaryName = QString::fromUtf8("gemini");
-        p.installHint = QString::fromUtf8("Install the Gemini CLI, or paste a GEMINI_API_KEY / GOOGLE_API_KEY.");
+        p.installHint = QString::fromUtf8("Install the Gemini CLI, or paste a GEMINI_API_KEY. Prefer Antigravity for the current Google agent CLI.");
+        out.push_back(p);
+    }
+    {
+        AIProviderInfo p;
+        p.id = QString::fromUtf8("antigravity");
+        p.displayName = QString::fromUtf8("Antigravity");
+        p.supportsCli = true;
+        p.supportsApi = true;
+        p.supportsCustomEndpoint = false;
+        p.defaultModel = QString::fromUtf8("gemini-2.5-flash");
+        p.suggestedModels = QStringList()
+                            << QString::fromUtf8("gemini-2.5-flash")
+                            << QString::fromUtf8("gemini-2.5-pro")
+                            << QString::fromUtf8("gemini-2.0-flash");
+        p.defaultBaseUrl = QString::fromUtf8("https://generativelanguage.googleapis.com/v1beta");
+        p.apiKeyEnvVar = QString::fromUtf8("GEMINI_API_KEY");
+        p.cliBinaryName = QString::fromUtf8("agy");
+        p.installHint = QString::fromUtf8(
+            "Install Antigravity CLI (agy). Connect with: (1) Google account — run agy once to sign in, then Use CLI; "
+            "(2) Gemini API key — paste key and Use API key via CLI; "
+            "(3) Direct Gemini HTTP — same key through the HTTP agent.");
         out.push_back(p);
     }
     {
@@ -105,6 +148,12 @@ makeCatalog()
         p.supportsApi = true;
         p.supportsCustomEndpoint = true;
         p.defaultModel = QString::fromUtf8("llama3.2");
+        p.suggestedModels = QStringList()
+                            << QString::fromUtf8("llama3.2")
+                            << QString::fromUtf8("llama3.1")
+                            << QString::fromUtf8("mistral")
+                            << QString::fromUtf8("qwen2.5")
+                            << QString::fromUtf8("codellama");
         p.defaultBaseUrl = QString::fromUtf8("http://127.0.0.1:11434/v1");
         p.apiKeyEnvVar = QString::fromUtf8("OLLAMA_API_KEY");
         p.cliBinaryName = QString();
@@ -119,6 +168,9 @@ makeCatalog()
         p.supportsApi = true;
         p.supportsCustomEndpoint = true;
         p.defaultModel = QString::fromUtf8("gpt-4.1");
+        p.suggestedModels = QStringList()
+                            << QString::fromUtf8("gpt-4.1")
+                            << QString::fromUtf8("gpt-4o");
         p.defaultBaseUrl = QString::fromUtf8("http://127.0.0.1:8000/v1");
         p.apiKeyEnvVar = QString();
         p.cliBinaryName = QString();
@@ -156,6 +208,17 @@ QString
 AIProviderRegistry::defaultProviderId()
 {
     return QString::fromUtf8("claude");
+}
+
+QStringList
+AIProviderRegistry::suggestedModels(const QString& providerId)
+{
+    const AIProviderInfo* info = findById(providerId);
+    if (!info) {
+        return QStringList();
+    }
+
+    return info->suggestedModels;
 }
 
 QString

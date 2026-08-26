@@ -167,4 +167,106 @@ AIConnectionSettings::clearApiKey(const QString& providerId)
     s.sync();
 }
 
+bool
+AIConnectionSettings::isAutoConnectEnabled()
+{
+    QSettings s;
+
+    // Default on: open the panel and reconnect without another Connect click.
+    return s.value( rootKey( QString::fromUtf8("autoConnectEnabled") ), true ).toBool();
+}
+
+void
+AIConnectionSettings::setAutoConnectEnabled(bool enabled)
+{
+    QSettings s;
+
+    s.setValue( rootKey( QString::fromUtf8("autoConnectEnabled") ), enabled );
+    s.sync();
+}
+
+bool
+AIConnectionSettings::resolveAutoMethod(AIConnectionConfig& config)
+{
+    const AIProviderInfo* info = AIProviderRegistry::findById(config.providerId);
+    if (!info) {
+        return false;
+    }
+
+    if ( config.baseUrl.isEmpty() ) {
+        config.baseUrl = info->defaultBaseUrl;
+    }
+    if ( config.model.isEmpty() ) {
+        config.model = info->defaultModel;
+    }
+
+    auto resolveCliPath = [&]() -> QString {
+        if ( !config.cliPath.isEmpty() ) {
+            return config.cliPath;
+        }
+        if ( info->cliBinaryName.isEmpty() ) {
+            return QString();
+        }
+        QString found = AIProviderRegistry::findCliExecutable(info->cliBinaryName);
+        if ( found.isEmpty() && ( config.providerId == QString::fromUtf8("antigravity") ) ) {
+            found = AIProviderRegistry::findCliExecutable( QString::fromUtf8("antigravity") );
+        }
+        if ( found.isEmpty() && ( config.providerId == QString::fromUtf8("gemini") ) ) {
+            found = AIProviderRegistry::findCliExecutable( QString::fromUtf8("agy") );
+        }
+
+        return found;
+    };
+
+    if ( config.method == eAIConnectionMethodCli ) {
+        const QString cli = resolveCliPath();
+        if ( !cli.isEmpty() ) {
+            config.cliPath = cli;
+
+            return true;
+        }
+        // CLI missing: fall through to API key if we have one.
+        if ( info->supportsApi && !config.apiKey.isEmpty() ) {
+            config.method = eAIConnectionMethodApiKey;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    if ( ( config.method == eAIConnectionMethodApiKey ) ||
+         ( config.method == eAIConnectionMethodCustom ) ) {
+        if ( ( config.providerId == QString::fromUtf8("ollama") ) ||
+             ( config.providerId == QString::fromUtf8("custom") ) ) {
+            return !config.baseUrl.isEmpty();
+        }
+
+        return !config.apiKey.isEmpty();
+    }
+
+    // method == none: prefer CLI, then API key.
+    if (info->supportsCli) {
+        const QString cli = resolveCliPath();
+        if ( !cli.isEmpty() ) {
+            config.cliPath = cli;
+            config.method = eAIConnectionMethodCli;
+
+            return true;
+        }
+    }
+    if ( info->supportsApi && !config.apiKey.isEmpty() ) {
+        config.method = eAIConnectionMethodApiKey;
+
+        return true;
+    }
+    if ( info->supportsCustomEndpoint && !config.baseUrl.isEmpty() ) {
+        config.method = eAIConnectionMethodCustom;
+
+        return true;
+    }
+
+    return false;
+}
+
 NATRON_NAMESPACE_EXIT

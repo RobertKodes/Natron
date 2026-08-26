@@ -77,6 +77,12 @@ public Q_SLOTS:
 
     void onConnectClicked();
 
+    void onAutoConnectToggled(bool checked);
+
+    void onModelComboChanged(const QString& model);
+
+    void onModelEditingFinished();
+
     void onTranscriptAnchorClicked(const QUrl& url);
 
     void onProviderComboChanged(int index);
@@ -103,6 +109,13 @@ private:
 
     void applyConnection(const AIConnectionConfig& config,
                          bool startBackend);
+
+    /// Start MCP + auto-connect when the preference allows it.
+    bool tryAutoConnect();
+
+    void refreshModelCombo();
+
+    void applySelectedModel(bool reconnectIfNeeded);
 
     void connectBackendSignals();
 

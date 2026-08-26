@@ -68,6 +68,8 @@ public Q_SLOTS:
 
     void onUseCli();
 
+    void onUseCliWithApiKey();
+
     void onUseApiKey();
 
     void onUseCustom();

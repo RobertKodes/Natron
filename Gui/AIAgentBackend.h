@@ -47,6 +47,7 @@ struct AIAgentBackendPrivate;
 struct ClaudeCodeBackendPrivate;
 struct CodexCliBackendPrivate;
 struct GeminiCliBackendPrivate;
+struct AntigravityCliBackendPrivate;
 
 /**
  * @brief Drives an external agent CLI or an HTTP tool-agent and normalizes its
@@ -269,6 +270,55 @@ private Q_SLOTS:
 private:
 
     std::unique_ptr<GeminiCliBackendPrivate> _geminiImp;
+};
+
+/**
+ * @brief AIAgentBackend for Google Antigravity CLI (`agy`).
+ *
+ * Auth modes: Google account (CLI subscription / cached OAuth) or Gemini API
+ * key via modelProvider=gemini + GEMINI_API_KEY. MCP is wired through a
+ * workspace `.agents/mcp_config.json` pointing at Natron's loopback server.
+ **/
+class AntigravityCliBackend
+    : public AIAgentBackend
+{
+GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    Q_OBJECT
+GCC_DIAG_SUGGEST_OVERRIDE_ON
+
+public:
+
+    explicit AntigravityCliBackend(QObject* parent = 0);
+
+    virtual ~AntigravityCliBackend();
+
+    void configure(const AIConnectionConfig& config);
+
+    virtual QString displayName() const OVERRIDE FINAL;
+    virtual QString providerId() const OVERRIDE FINAL;
+    virtual QString connectionMethodLabel() const OVERRIDE FINAL;
+    virtual QString findExecutable() const OVERRIDE FINAL;
+    virtual bool start(const QString& cwd,
+                       const QString& mcpUrl,
+                       const QString& token) OVERRIDE FINAL;
+    virtual void send(const QString& text) OVERRIDE FINAL;
+    virtual void interrupt() OVERRIDE FINAL;
+    virtual void stop() OVERRIDE FINAL;
+    virtual bool isRunning() const OVERRIDE FINAL;
+
+private Q_SLOTS:
+
+    void onReadyReadStandardOutput();
+
+    void onReadyReadStandardError();
+
+    void onProcessFinished(int exitCode);
+
+    void onProcessError();
+
+private:
+
+    std::unique_ptr<AntigravityCliBackendPrivate> _agyImp;
 };
 
 NATRON_NAMESPACE_EXIT

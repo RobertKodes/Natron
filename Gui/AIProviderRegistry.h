@@ -52,6 +52,8 @@ struct AIProviderInfo
     bool supportsApi;
     bool supportsCustomEndpoint;
     QString defaultModel;
+    /// Common choices shown in the Model combo (user can still type a custom id).
+    QStringList suggestedModels;
     QString defaultBaseUrl;
     QString apiKeyEnvVar;
     QString cliBinaryName;
@@ -70,6 +72,9 @@ public:
     static const AIProviderInfo* findById(const QString& id);
 
     static QString defaultProviderId();
+
+    /// Suggested model ids for the given provider (empty if unknown).
+    static QStringList suggestedModels(const QString& providerId);
 
     /**
      * @brief Locates a CLI binary by name on PATH and known install locations.

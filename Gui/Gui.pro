@@ -83,6 +83,7 @@ SOURCES += \
     AIProviderRegistry.cpp \
     CodexCliBackend.cpp \
     GeminiCliBackend.cpp \
+    AntigravityCliBackend.cpp \
     HttpToolAgentBackend.cpp \
     AnimatedCheckBox.cpp \
     AutoHideToolBar.cpp \

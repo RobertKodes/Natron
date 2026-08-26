@@ -300,6 +300,9 @@ CodexCliBackend::send(const QString& text)
     args << QString::fromUtf8("exec");
     args << QString::fromUtf8("--json");
     args << QString::fromUtf8("--skip-git-repo-check");
+    if ( !_codexImp->config.model.trimmed().isEmpty() ) {
+        args << QString::fromUtf8("-m") << _codexImp->config.model.trimmed();
+    }
     args << text;
 
     _codexImp->process = new QProcess(this);
